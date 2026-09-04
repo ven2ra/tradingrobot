@@ -292,10 +292,21 @@ class MockBroker:
         if new_lots == 0:
             del self._positions[key]
             return
-        if (existing.lots >= 0 and lots_delta > 0) or (existing.lots <= 0 and lots_delta < 0):
+        same_direction = (existing.lots >= 0 and lots_delta > 0) or (existing.lots <= 0 and lots_delta < 0)
+        flipped_sign = (existing.lots > 0 and new_lots < 0) or (existing.lots < 0 and new_lots > 0)
+        if same_direction:
             total_cost = existing.average_price * existing.lots + price * lots_delta
             new_avg = total_cost / new_lots
+        elif flipped_sign:
+            # Сделка "пробила" через ноль: старая позиция (long или short)
+            # полностью закрыта этой же сделкой, а остаток лотов открывает
+            # НОВУЮ позицию в противоположную сторону — её средняя цена
+            # входа это цена текущей сделки, а не средняя цена закрытой
+            # позиции (иначе P&L новой позиции считался бы от чужой цены).
+            new_avg = price
         else:
+            # Частичное сокращение позиции без разворота — средняя цена
+            # входа остающейся части не меняется.
             new_avg = existing.average_price
         self._positions[key] = Position(instrument=instrument, lots=new_lots, average_price=new_avg)
 

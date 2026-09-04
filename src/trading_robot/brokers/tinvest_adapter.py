@@ -52,6 +52,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -132,6 +133,16 @@ _T = TypeVar("_T")
 # вызов превращается в понятную ошибку максимум через это время.
 _CALL_TIMEOUT_SECONDS = 10.0
 
+# T-Invest ограничивает большинство методов ~2 запроса/сек на пользователя
+# (видно из ошибки самого API: `ratelimit_limit='2, 2;w=1'`). Один такт
+# робота с несколькими инструментами и несколькими уровнями сетки легко
+# отправляет пачку заявок быстрее этого лимита — тогда часть place_limit_order
+# падает с RESOURCE_EXHAUSTED, такт по этому инструменту пропускается
+# ("Пропустил такт" в журнале), а повтор на следующем такте уходит уже по
+# другой (успевшей уйти) цене сетки. Держим паузу между ЛЮБЫМИ вызовами
+# SDK с запасом, чтобы не подходить к лимиту вплотную.
+_MIN_CALL_INTERVAL_SECONDS = 0.55
+
 
 class TInvestAdapter:
     """Реализует Protocol BrokerAdapter (см. interfaces/broker.py) поверх
@@ -162,8 +173,13 @@ class TInvestAdapter:
         # выполняются последовательно (см. engine/loop.py — синхронный цикл),
         # пул нужен только чтобы дать вызову таймаут через Future.result().
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="tinvest-io")
+        self._last_call_at: float = 0.0
 
     def _call(self, fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+        elapsed = time.monotonic() - self._last_call_at
+        if elapsed < _MIN_CALL_INTERVAL_SECONDS:
+            time.sleep(_MIN_CALL_INTERVAL_SECONDS - elapsed)
+        self._last_call_at = time.monotonic()
         future = self._executor.submit(fn, *args, **kwargs)
         try:
             return future.result(timeout=self._call_timeout)
