@@ -110,15 +110,45 @@ sudo bash deploy/deploy.sh
 
 Скрипт создаёт системного пользователя `tradingrobot` без права входа,
 клонирует репозиторий в `/opt/tradingrobot`, ставит зависимости в venv и
-поднимает `systemd`-сервис `tradingrobot` (см. `deploy/tradingrobot.service`) —
-процесс работает независимо от прочих сайтов/сервисов на хосте, со своими
-логами (`journalctl -u tradingrobot -f`) и каталогом данных
-(`/opt/tradingrobot/data`). Секреты (`TINVEST_TOKEN` и т.п.) кладутся в
-`/etc/tradingrobot.env` (см. `deploy/tradingrobot.env.example`), а не в
-`config.yaml`. Обновление: повторный запуск `deploy.sh` (git reset --hard на
-свежий `main` + перезапуск сервиса).
+поднимает ДВА `systemd`-сервиса:
 
-## 8. Чеклист запуска на paper
+- `tradingrobot` — сам движок (см. `deploy/tradingrobot.service`);
+- `tradingrobot-web` — read-only веб-панель мониторинга на порту `8765`
+  (см. `deploy/tradingrobot-web.service` и раздел 8 ниже).
+
+Оба работают независимо от прочих сайтов/сервисов на хосте, со своими
+логами (`journalctl -u tradingrobot -f`, `journalctl -u tradingrobot-web -f`)
+и каталогом данных (`/opt/tradingrobot/data`). Секреты (`TINVEST_TOKEN`,
+`WEBUI_USER`/`WEBUI_PASSWORD` и т.п.) кладутся в `/etc/tradingrobot.env`
+(см. `deploy/tradingrobot.env.example`), а не в `config.yaml`; при первом
+запуске `deploy.sh` пароль панели генерируется автоматически и выводится
+в консоль. Обновление: повторный запуск `deploy.sh` (git reset --hard на
+свежий `main` + перезапуск сервисов).
+
+## 8. Веб-панель мониторинга (read-only)
+
+`src/trading_robot/webui/server.py` — отдельный HTTP-процесс на стандартной
+библиотеке Python (без Flask/FastAPI), который читает `journal.jsonl` и
+`state.json` движка и отдаёт HTML-страницу с автообновлением (раз в 3с):
+текущий торговый день, equity на начало дня, флаг дневного стоп-лосса и
+последние 200 решений (`enter/skip/cancel/flatten/sync`) с причиной,
+ценой, лотами, статусом заявки. **У панели нет доступа к `BrokerAdapter`
+и она не может выставить/отменить ни одной заявки** — она только читает
+файлы, которые пишет `RobotEngine`.
+
+Локальный запуск:
+```bash
+python -m trading_robot.webui.server --config config/config.yaml --host 127.0.0.1 --port 8765
+```
+
+Если `--host` не `127.0.0.1`/`localhost` — сервер откажется стартовать без
+`WEBUI_USER`/`WEBUI_PASSWORD` (Basic Auth), чтобы журнал сделок не оказался
+публично доступен без пароля. На сервере, поднятом через `deploy.sh`, панель
+уже слушает `0.0.0.0:8765` с автосгенерированным паролем — откройте
+`http://<IP_сервера>:8765/` и введите логин/пароль из `/etc/tradingrobot.env`
+(и убедитесь, что порт 8765 открыт в файрволе/security group).
+
+## 9. Чеклист запуска на paper
 
 1. `pip install -r requirements.txt` (или `pip install -e .`).
 2. Проверить `config/config.yaml`: `trading.mode: paper`, `broker.kind: mock`
@@ -135,7 +165,7 @@ sudo bash deploy/deploy.sh
    реализованный боевой адаптер (снять все `NotImplementedError`) и
    убрать mock-заглушки лота/шага цены из `main.py::build_mock_broker`.
 
-## 9. Ограничения и то, чего робот сознательно не делает
+## 10. Ограничения и то, чего робот сознательно не делает
 
 - Не предсказывает цену и не обещает прибыль — только исполняет жёсткие
   правила сетки в `range`-режиме.
