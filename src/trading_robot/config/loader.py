@@ -101,6 +101,7 @@ class RootConfig(BaseModel):
     llm: LlmConfig = LlmConfig()
     state_store_path: str = "./data/state.json"
     account_snapshot_path: str = "./data/account.json"
+    selected_instruments_path: str = "./data/selected_instruments.json"
     tick_interval_seconds: float = 5.0
 
     @field_validator("instruments")

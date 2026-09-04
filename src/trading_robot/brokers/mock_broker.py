@@ -19,6 +19,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
+from trading_robot.data.liquid_tickers import lot_size_for
 from trading_robot.domain.types import (
     AccountState,
     Bar,
@@ -80,6 +81,27 @@ class MockBroker:
         if not self._connected:
             raise MockBrokerError("broker not connected")
 
+    def _ensure_spec(self, instrument: Instrument) -> InstrumentSpec:
+        """Регистрирует DEFAULT-спецификацию для тикера, которого не было в
+        конфиге при старте (например добавлен через веб-панель после запуска) —
+        лот берётся из курируемого списка liquid_tickers.py, если тикер там
+        есть, иначе DEFAULT=10. Реальный брокер такой проблемы не имеет —
+        get_instrument_spec там всегда бьёт в API брокера.
+        """
+        key = instrument.key
+        spec = self._specs.get(key)
+        if spec is not None:
+            return spec
+        spec = InstrumentSpec(
+            instrument=instrument,
+            lot_size=lot_size_for(instrument.ticker),
+            price_step=Decimal("0.01"),
+            currency=self._currency,
+        )
+        self._specs[key] = spec
+        self._prices.setdefault(key, Decimal("100"))
+        return spec
+
     # -- market data ----------------------------------------------------
     def _walk_price(self, key: str) -> Decimal:
         spec = self._specs[key]
@@ -95,7 +117,7 @@ class MockBroker:
     def get_quote(self, instrument: Instrument) -> Quote:
         self._require_connected()
         key = instrument.key
-        spec = self._specs[key]
+        spec = self._ensure_spec(instrument)
         mid = self._walk_price(key)
         half_spread = spec.price_step
         bid = self._round_to_step(mid - half_spread, spec.price_step)
@@ -111,7 +133,7 @@ class MockBroker:
     def get_orderbook(self, instrument: Instrument, depth: int) -> OrderBook:
         self._require_connected()
         key = instrument.key
-        spec = self._specs[key]
+        spec = self._ensure_spec(instrument)
         mid = self._prices[key]
         bids = tuple(
             OrderBookLevel(
@@ -132,7 +154,7 @@ class MockBroker:
     def get_bars(self, instrument: Instrument, interval: str, limit: int) -> list[Bar]:
         self._require_connected()
         key = instrument.key
-        spec = self._specs[key]
+        spec = self._ensure_spec(instrument)
         bars: list[Bar] = []
         price = self._prices[key]
         for i in range(limit):
@@ -155,7 +177,7 @@ class MockBroker:
         return bars
 
     def get_instrument_spec(self, instrument: Instrument) -> InstrumentSpec:
-        return self._specs[instrument.key]
+        return self._ensure_spec(instrument)
 
     @staticmethod
     def _round_to_step(price: Decimal, step: Decimal) -> Decimal:
@@ -235,7 +257,7 @@ class MockBroker:
     def _try_fill(self, order: Order) -> None:
         """Исполняет лимитку немедленно, если цена пересекает текущий mid + slippage."""
         key = order.instrument.key
-        spec = self._specs[key]
+        spec = self._ensure_spec(order.instrument)
         mid = self._prices[key]
         slip = mid * self._slippage_bps / Decimal("10000")
 

@@ -1,10 +1,19 @@
-"""Read-only веб-панель мониторинга робота.
+"""Веб-панель мониторинга робота — почти полностью read-only.
 
-Отдельный процесс от RobotEngine: читает `journal.jsonl` и `state.json`,
-которые пишет движок, и не имеет доступа ни к BrokerAdapter, ни к
-`place_*`/`cancel_*` — панель не может влиять на торговлю, только
-показывает её. Реализована на стандартной библиотеке (без FastAPI/Flask),
-чтобы не тянуть лишние зависимости в прод для простого read-only вьюера.
+Отдельный процесс от RobotEngine: читает `journal.jsonl`, `state.json` и
+`account.json`, которые пишет движок, и НЕ имеет доступа ни к
+BrokerAdapter, ни к `place_*`/`cancel_*` — панель не может выставить или
+отменить ни одной заявки. Единственное узкое, осознанное исключение:
+панель может ЗАПИСАТЬ `selected_instruments.json` (какие акции
+отслеживать) через POST /api/instruments — движок сам перечитывает этот
+файл на каждом такте и подставляет его как список инструментов вместо
+config.instruments (см. store/instrument_selection.py и
+engine/loop.py::_load_instruments). Никакие торговые решения панель не
+принимает — что делать с выбранными инструментами (входить/пропускать/
+сколько лотов), по-прежнему решают Regime/ContextFilter/Strategy/Risk.
+
+Реализована на стандартной библиотеке (без FastAPI/Flask), чтобы не
+тянуть лишние зависимости в прод.
 
 Запуск:
   python -m trading_robot.webui.server --config config/config.yaml --host 0.0.0.0 --port 8765
@@ -24,6 +33,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from trading_robot.config.loader import RootConfig, load_config
+from trading_robot.data.liquid_tickers import LIQUID_TQBR_SHARES
+from trading_robot.store.instrument_selection import InstrumentSelectionError, InstrumentSelectionStore
 
 INDEX_HTML = """<!doctype html>
 <html lang="ru">
@@ -95,6 +106,19 @@ INDEX_HTML = """<!doctype html>
   .status-cancelled         { color: #ff8c8c; }
 
   .muted { color: #6a6f76; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 220px; overflow-y: auto; padding: 4px 2px; }
+  .chip { border: 1px solid #2a2e33; background: #101317; color: #9aa0a6; border-radius: 999px;
+          padding: 4px 12px; font-size: 12px; cursor: pointer; user-select: none; transition: all .1s; }
+  .chip:hover { border-color: #3a3f46; color: #e6e6e6; }
+  .chip.active { background: rgba(94,203,125,.15); border-color: #5ecb7d; color: #5ecb7d; font-weight: 600; }
+  .btn { background: #2a2e33; border: 1px solid #3a3f46; color: #e6e6e6; border-radius: 6px;
+         padding: 7px 14px; font-size: 13px; cursor: pointer; }
+  .btn:hover { background: #3a3f46; }
+  .btn-primary { background: #2f6f4a; border-color: #3a8a5c; }
+  .btn-primary:hover { background: #3a8a5c; }
+  .status-ok-text { color: #5ecb7d; }
+  .status-err-text { color: #ff6b6b; }
 </style>
 </head>
 <body>
@@ -138,6 +162,23 @@ INDEX_HTML = """<!doctype html>
         </tr></thead>
         <tbody id="positions-rows"></tbody>
       </table>
+    </div>
+  </div>
+
+  <div class="panel" id="instruments-panel">
+    <h2>Какие акции отслеживать
+      <span class="hint" title="Изменения применяются на следующем такте робота (обычно в течение нескольких секунд) — перезапуск не нужен. Список ограничен 30 тикерами за раз: каждый тикер — минимум пара сетевых запросов к брокеру за такт.">?</span>
+    </h2>
+    <div class="sub" style="margin-bottom:12px">
+      Кликните по тикеру, чтобы включить/выключить его, или добавьте свой в поле снизу. Нажмите «Сохранить» — робот подхватит список на следующем такте.
+    </div>
+    <div id="ticker-chips" class="chips"></div>
+    <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; align-items:center">
+      <input id="custom-ticker" type="text" placeholder="Свой тикер, например POLY" maxlength="15"
+             style="background:#101317; border:1px solid #2a2e33; color:#e6e6e6; border-radius:6px; padding:7px 10px; font-size:13px; width:200px">
+      <button id="add-ticker-btn" class="btn">Добавить</button>
+      <button id="save-instruments-btn" class="btn btn-primary">Сохранить список</button>
+      <span id="instruments-status" class="muted" style="font-size:12px"></span>
     </div>
   </div>
 
@@ -332,6 +373,83 @@ try {
   if (localStorage.getItem('glossaryCollapsed') === '1') glossaryPanel.classList.add('collapsed');
 } catch (e) {}
 
+// -- управление списком акций -------------------------------------------
+let universe = [];       // курируемый список тикеров для чипов (с сервера)
+let selectedTickers = new Set();  // текущее локальное состояние выбора (до сохранения)
+let loadedInitialSelection = false;
+
+function renderChips() {
+  const container = document.getElementById('ticker-chips');
+  const allTickers = Array.from(new Set([...universe, ...selectedTickers])).sort();
+  container.innerHTML = allTickers.map(t => `
+    <span class="chip ${selectedTickers.has(t) ? 'active' : ''}" data-ticker="${t}">${t}</span>
+  `).join('');
+  container.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const t = chip.dataset.ticker;
+      if (selectedTickers.has(t)) selectedTickers.delete(t); else selectedTickers.add(t);
+      renderChips();
+    });
+  });
+}
+
+async function loadInstrumentsPanel() {
+  try {
+    const [uRes, iRes] = await Promise.all([
+      fetch('/api/universe', { cache: 'no-store' }),
+      fetch('/api/instruments', { cache: 'no-store' }),
+    ]);
+    const uData = await uRes.json();
+    universe = uData.tickers || [];
+    if (!loadedInitialSelection) {
+      const iData = await iRes.json();
+      selectedTickers = new Set(iData.selected || []);
+      loadedInitialSelection = true;
+    }
+    renderChips();
+  } catch (e) {
+    document.getElementById('instruments-status').textContent = 'Не удалось загрузить список: ' + e;
+  }
+}
+
+document.getElementById('add-ticker-btn').addEventListener('click', () => {
+  const input = document.getElementById('custom-ticker');
+  const t = input.value.trim().toUpperCase();
+  if (t) { selectedTickers.add(t); input.value = ''; renderChips(); }
+});
+document.getElementById('custom-ticker').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('add-ticker-btn').click();
+});
+
+document.getElementById('save-instruments-btn').addEventListener('click', async () => {
+  const statusEl = document.getElementById('instruments-status');
+  const tickers = Array.from(selectedTickers);
+  if (tickers.length === 0) {
+    statusEl.textContent = 'Выберите хотя бы один тикер';
+    statusEl.className = 'status-err-text';
+    return;
+  }
+  statusEl.textContent = 'Сохраняю...';
+  statusEl.className = 'muted';
+  try {
+    const res = await fetch('/api/instruments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tickers }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    statusEl.textContent = `Сохранено (${data.selected.length}). Робот применит на следующем такте.`;
+    statusEl.className = 'status-ok-text';
+  } catch (e) {
+    statusEl.textContent = 'Ошибка: ' + e;
+    statusEl.className = 'status-err-text';
+  }
+});
+
+loadInstrumentsPanel();
+setInterval(loadInstrumentsPanel, 15000);
+
 refresh();
 setInterval(refresh, 3000);
 </script>
@@ -373,6 +491,8 @@ def make_handler(cfg: RootConfig, auth_header: str | None):
     journal_path = Path(cfg.journal.jsonl_path)
     state_path = Path(cfg.state_store_path)
     account_path = Path(cfg.account_snapshot_path)
+    instrument_selection = InstrumentSelectionStore(Path(cfg.selected_instruments_path))
+    config_tickers = [ic.ticker for ic in cfg.instruments]
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "TradingRobotMonitor/1.0"
@@ -412,17 +532,57 @@ def make_handler(cfg: RootConfig, auth_header: str | None):
                     "account": _read_state(account_path),
                     "recent": _tail_jsonl(journal_path, limit=200),
                 }
-                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self._send_json(200, payload)
+                return
+
+            if self.path.startswith("/api/universe"):
+                self._send_json(200, {"tickers": [t.ticker for t in LIQUID_TQBR_SHARES]})
+                return
+
+            if self.path.startswith("/api/instruments"):
+                selected = instrument_selection.load()
+                tickers = [s.ticker for s in selected] if selected is not None else config_tickers
+                source = "panel" if selected is not None else "config"
+                self._send_json(200, {"selected": tickers, "source": source})
                 return
 
             self.send_response(404)
             self.send_header("Content-Length", "0")
             self.end_headers()
+
+        def do_POST(self) -> None:  # noqa: N802 - stdlib method name
+            if not self._check_auth():
+                self._unauthorized()
+                return
+
+            if self.path.startswith("/api/instruments"):
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length <= 0 or length > 65536:
+                        raise ValueError("empty or too large request body")
+                    raw = self.rfile.read(length)
+                    data = json.loads(raw)
+                    tickers = data.get("tickers")
+                    if not isinstance(tickers, list) or not all(isinstance(t, str) for t in tickers):
+                        raise ValueError("'tickers' должен быть списком строк")
+                    instrument_selection.save(tickers)
+                    saved = instrument_selection.load()
+                    self._send_json(200, {"ok": True, "selected": [s.ticker for s in saved or []]})
+                except (InstrumentSelectionError, ValueError, json.JSONDecodeError) as exc:
+                    self._send_json(400, {"ok": False, "error": str(exc)})
+                return
+
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def _send_json(self, status: int, payload: dict) -> None:
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
     return Handler
 

@@ -161,6 +161,20 @@ sudo bash deploy/deploy.sh
 и она не может выставить/отменить ни одной заявки** — она только читает
 файлы, которые пишет `RobotEngine`.
 
+Единственное узкое исключение — блок «Какие акции отслеживать»: панель
+пишет `data/selected_instruments.json` (`POST /api/instruments`), движок
+перечитывает этот файл на каждом такте (`RobotEngine._load_instruments`)
+и подставляет его вместо `config.instruments`. Список для быстрого выбора
+берётся из курируемого набора ~115 ликвидных тикеров MOEX
+(`src/trading_robot/data/liquid_tickers.py`, `GET /api/universe`), но
+можно добавить и любой другой тикер вручную — что бы ни было выбрано,
+input/enter/skip по-прежнему решают Regime/ContextFilter/Strategy/Risk,
+панель только определяет, ЗА какими бумагами вообще следить. Лимит — 30
+тикеров одновременно (каждый — минимум 2 сетевых запроса к брокеру за
+такт). Для `MockBroker` тикер, которого не было в `config.instruments`,
+получает DEFAULT-спецификацию (лот из курируемого списка или 10,
+шаг цены 0.01) — для `tinvest` спецификация всегда берётся у брокера.
+
 Локальный запуск:
 ```bash
 python -m trading_robot.webui.server --config config/config.yaml --host 127.0.0.1 --port 8765

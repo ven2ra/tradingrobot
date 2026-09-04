@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from trading_robot.config.loader import RootConfig
 from trading_robot.context.context_filter import CalendarContextFilter, ContextVerdict, combine_verdicts
-from trading_robot.domain.types import Instrument, InstrumentClass, InstrumentSpec, OrderStatus, Side
+from trading_robot.domain.types import AccountState, Instrument, InstrumentClass, InstrumentSpec, OrderStatus, Side
 from trading_robot.features.features import compute_features
 from trading_robot.interfaces.broker import BrokerAdapter
 from trading_robot.journal.account_snapshot import build_snapshot, write_account_snapshot
@@ -35,6 +35,7 @@ from trading_robot.risk.risk_manager import (
     equity_of,
     max_allowed_notional_for_instrument,
 )
+from trading_robot.store.instrument_selection import InstrumentSelectionStore, SelectedInstrument
 from trading_robot.store.state_store import RobotState, StateStore
 from trading_robot.strategy.grid_strategy import (
     GridConfig,
@@ -61,6 +62,10 @@ def instruments_from_config(cfg: RootConfig) -> list[Instrument]:
             )
         )
     return result
+
+
+def instrument_from_selected(sel: SelectedInstrument) -> Instrument:
+    return Instrument(ticker=sel.ticker, board=sel.board, instrument_class=InstrumentClass(sel.instrument_class))
 
 
 def risk_limits_from_config(cfg: RootConfig) -> RiskLimits:
@@ -110,7 +115,9 @@ class RobotEngine:
         self._broker = broker
         self._journal = journal
         self._store = state_store
-        self._instruments = instruments_from_config(cfg)
+        self._config_instruments = instruments_from_config(cfg)
+        self._instrument_selection_store = InstrumentSelectionStore(Path(cfg.selected_instruments_path))
+        self._instruments = self._load_instruments()
         self._risk_limits = risk_limits_from_config(cfg)
         self._regime_thresholds = regime_thresholds_from_config(cfg)
         self._grid_config = grid_config_from_config(cfg)
@@ -120,6 +127,16 @@ class RobotEngine:
         self._state = state_store.load()
         self._daily_tracker: DailyPnlTracker | None = None
         self._account_snapshot_path = Path(cfg.account_snapshot_path)
+
+    def _load_instruments(self) -> list[Instrument]:
+        """Список инструментов на этот такт: то, что выбрано через веб-панель
+        (data/selected_instruments.json), либо — если панель им ни разу не
+        пользовалась — статический список из config.instruments.
+        """
+        selected = self._instrument_selection_store.load()
+        if selected is None:
+            return self._config_instruments
+        return [instrument_from_selected(s) for s in selected]
 
     def start(self) -> None:
         self._broker.connect()
@@ -133,11 +150,26 @@ class RobotEngine:
         )
         self._reconcile_day(account)
 
-    def _fetch_marks(self) -> tuple[dict[str, Decimal], dict[str, InstrumentSpec]]:
-        """mark_prices — цена за единицу инструмента; specs — для домножения на lot_size."""
+    def _fetch_marks(self, account: AccountState | None = None) -> tuple[dict[str, Decimal], dict[str, InstrumentSpec]]:
+        """mark_prices — цена за единицу инструмента; specs — для домножения на lot_size.
+
+        Котирует не только self._instruments (текущий выбор с панели/конфига),
+        но и любые инструменты из открытых позиций account — иначе после
+        смены списка акций через веб-панель позиции по СТАРЫМ тикерам
+        выпадают из equity_of() (specs.get(key) is None -> пропуск),
+        занижая equity и ложно бьют по дневному стоп-лоссу.
+        """
         mark_prices: dict[str, Decimal] = {}
         specs: dict[str, InstrumentSpec] = {}
-        for instrument in self._instruments:
+        instruments = list(self._instruments)
+        known_keys = {i.key for i in instruments}
+        if account is not None:
+            for pos in account.positions:
+                if pos.instrument.key not in known_keys:
+                    known_keys.add(pos.instrument.key)
+                    instruments.append(pos.instrument)
+
+        for instrument in instruments:
             try:
                 quote = self._broker.get_quote(instrument)
                 specs[instrument.key] = self._broker.get_instrument_spec(instrument)
@@ -146,10 +178,10 @@ class RobotEngine:
                 logger.warning("failed to fetch quote/spec for %s", instrument.key)
         return mark_prices, specs
 
-    def _reconcile_day(self, account) -> None:
+    def _reconcile_day(self, account: AccountState) -> None:
         today = datetime.now(MSK).date().isoformat()
         if self._state.trading_day != today:
-            mark_prices, specs = self._fetch_marks()
+            mark_prices, specs = self._fetch_marks(account)
             equity = equity_of(account, mark_prices, specs)
             self._state.trading_day = today
             self._state.day_start_equity = str(equity)
@@ -170,9 +202,10 @@ class RobotEngine:
 
     def run_tick(self) -> None:
         now = datetime.now(MSK)
+        self._instruments = self._load_instruments()
         account = self._broker.sync_state()
 
-        mark_prices, specs = self._fetch_marks()
+        mark_prices, specs = self._fetch_marks(account)
         equity = equity_of(account, mark_prices, specs)
 
         snapshot = build_snapshot(account, mark_prices, specs, equity, now)
