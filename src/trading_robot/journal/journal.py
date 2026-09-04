@@ -27,7 +27,7 @@ class JournalEntry:
     time_msk: str
     ticker: str
     regime: str
-    action: str  # enter | skip | cancel | flatten | sync
+    action: str  # enter | skip | cancel | flatten | sync | update
     reason: str
     client_order_id: str | None
     broker_order_id: str | None

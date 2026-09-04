@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from trading_robot.config.loader import RootConfig
 from trading_robot.context.context_filter import CalendarContextFilter, ContextVerdict, combine_verdicts
-from trading_robot.domain.types import AccountState, Instrument, InstrumentClass, InstrumentSpec, OrderStatus, Side
+from trading_robot.domain.types import AccountState, Instrument, InstrumentClass, InstrumentSpec, Order, OrderStatus, Side
 from trading_robot.features.features import compute_features
 from trading_robot.interfaces.broker import BrokerAdapter
 from trading_robot.journal.account_snapshot import build_snapshot, write_account_snapshot
@@ -134,6 +134,14 @@ class RobotEngine:
         # дневному стоп-лоссу.
         self._last_mark_prices: dict[str, Decimal] = {}
         self._last_specs: dict[str, InstrumentSpec] = {}
+        # Последний известный снимок ЗАЯВОК и ПОЗИЦИЙ (по client_order_id /
+        # instrument.key) — нужен _reconcile_order_statuses(), чтобы отслеживать
+        # смену статуса заявки между тактами и писать её в журнал (иначе колонка
+        # "Статус заявки" в панели навсегда остаётся такой, какой была в момент
+        # выставления — почти всегда "Новая" — потому что журнал пишется только
+        # в момент отправки заявки, а исполнение происходит позже).
+        self._last_orders: dict[str, Order] = {}
+        self._last_position_lots: dict[str, int] = {}
 
     def _load_instruments(self) -> list[Instrument]:
         """Список инструментов на этот такт: то, что выбрано через веб-панель
@@ -200,6 +208,62 @@ class RobotEngine:
                     logger.warning("failed to fetch quote/spec for %s, no cached fallback", instrument.key)
         return mark_prices, specs
 
+    def _reconcile_order_statuses(self, account: AccountState) -> None:
+        """Пишет в журнал КАЖДОЕ изменение статуса заявки, а не только момент
+        выставления. Без этого "Статус заявки" в панели навсегда остаётся
+        таким, каким был в момент отправки (почти всегда "Новая"/NEW), потому
+        что запись в журнал делается один раз — в _process_instrument(), в
+        момент place_limit_order — и больше никогда не обновляется, даже
+        когда заявка реально исполняется или снимается с биржи.
+
+        get_orders() у брокера отдаёт только АКТИВНЫЕ заявки (это касается
+        и T-Invest live/sandbox, и нашей терминологии в целом) — исполненная
+        или отменённая заявка просто исчезает из списка, отдельного статуса
+        по ней брокер после этого не возвращает. Поэтому для заявок, которые
+        были активны на прошлом такте, а сейчас пропали, статус ВЫВОДИТСЯ:
+        если позиция по инструменту сдвинулась в сторону заявки — она,
+        скорее всего, исполнена; если нет — скорее всего отменена/истекла.
+        Это эвристика, а не точный факт от брокера, поэтому в reason всегда
+        помечена как "вывод по факту" — так же отражается и в панели.
+        """
+        current_orders = {o.client_order_id: o for o in account.orders}
+        position_lots = {p.instrument.key: p.lots for p in account.positions}
+
+        for client_order_id, order in current_orders.items():
+            prev = self._last_orders.get(client_order_id)
+            if prev is not None and prev.status == order.status:
+                continue
+            self._journal.record(
+                ticker=order.instrument.ticker, regime="n/a", action="update",
+                reason=f"order status changed to {order.status.value}",
+                account=account, client_order_id=client_order_id,
+                broker_order_id=order.broker_order_id, price=order.price,
+                lots=order.lots, status=order.status.value,
+            )
+
+        for client_order_id, prev in self._last_orders.items():
+            if client_order_id in current_orders:
+                continue
+            prev_lots = self._last_position_lots.get(prev.instrument.key, 0)
+            new_lots = position_lots.get(prev.instrument.key, 0)
+            delta = new_lots - prev_lots
+            moved_toward_order = (prev.side == Side.BUY and delta > 0) or (prev.side == Side.SELL and delta < 0)
+            if moved_toward_order:
+                inferred_status = OrderStatus.FILLED
+                reason = "order no longer active: inferred filled (position moved toward order side)"
+            else:
+                inferred_status = OrderStatus.CANCELLED
+                reason = "order no longer active: inferred cancelled (position unchanged)"
+            self._journal.record(
+                ticker=prev.instrument.ticker, regime="n/a", action="update",
+                reason=reason, account=account, client_order_id=client_order_id,
+                broker_order_id=prev.broker_order_id, price=prev.price, lots=prev.lots,
+                status=inferred_status.value,
+            )
+
+        self._last_orders = current_orders
+        self._last_position_lots = position_lots
+
     def _reconcile_day(self, account: AccountState) -> None:
         today = datetime.now(MSK).date().isoformat()
         if self._state.trading_day != today:
@@ -226,6 +290,10 @@ class RobotEngine:
         now = datetime.now(MSK)
         self._instruments = self._load_instruments()
         account = self._broker.sync_state()
+        try:
+            self._reconcile_order_statuses(account)
+        except Exception:
+            logger.exception("failed to reconcile order statuses, continuing tick")
 
         mark_prices, specs = self._fetch_marks(account)
         equity = equity_of(account, mark_prices, specs)
