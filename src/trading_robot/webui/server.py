@@ -120,11 +120,26 @@ INDEX_HTML = """<!doctype html>
         <dt>Капитал (equity)</dt><dd>Деньги на счёте + стоимость всех открытых позиций по текущей цене. Показывает, сколько «стоит» счёт целиком.</dd>
         <dt>Дневной стоп-лосс</dt><dd>Если за день счёт потерял больше заданного процента (обычно 1%), робот перестаёт открывать новые сделки до следующего торгового дня — только закрывает риск и ждёт.</dd>
         <dt>Причина (reason)</dt><dd>Объяснение робота, почему на этом такте он поступил именно так. Технические подробности показаны при наведении курсора.</dd>
+        <dt>P&amp;L (профит/убыток)</dt><dd>Разница между текущей стоимостью позиции и суммой, за которую она была куплена. Показанный на панели P&amp;L — <b>нереализованный</b>: позиция ещё открыта, и цифра меняется вместе с ценой, пока сделка не закрыта.</dd>
       </dl>
     </div>
   </div>
 
   <div class="cards" id="cards"></div>
+
+  <div class="panel" id="positions-panel">
+    <h2>Позиции и P&amp;L <span class="hint" title="P&amp;L (profit and loss) — прибыль или убыток. Здесь показан НЕреализованный P&amp;L: сколько бы вы заработали/потеряли, если бы закрыли позицию прямо сейчас по текущей цене. Пока позиция открыта, это число меняется вместе с ценой.">?</span></h2>
+    <div class="wrap" style="max-height:none">
+      <table>
+        <thead><tr>
+          <th>Тикер</th><th>Лоты</th><th>Средняя цена входа</th><th>Текущая цена</th>
+          <th>Стоимость позиции<span class="hint" title="Текущая рыночная стоимость позиции: цена × лот × количество лотов.">?</span></th>
+          <th>Нереализованный P&amp;L</th>
+        </tr></thead>
+        <tbody id="positions-rows"></tbody>
+      </table>
+    </div>
+  </div>
 
   <div class="wrap">
     <table>
@@ -242,20 +257,51 @@ async function refresh() {
   document.getElementById('stale').textContent = '';
 
   const st = data.state || {};
+  const acc = data.account || {};
+  const positions = acc.positions || [];
+  const totalPnl = positions.reduce((sum, p) => sum + parseFloat(p.unrealized_pnl || '0'), 0);
+  const dayStart = parseFloat(st.day_start_equity || '0');
+  const nowEquity = acc.equity !== undefined ? parseFloat(acc.equity) : null;
+  const dayChangePct = (nowEquity !== null && dayStart) ? ((nowEquity - dayStart) / dayStart * 100) : null;
+
   const cards = [
-    ['Торговый день', st.trading_day ?? '—', ''],
-    ['Капитал на начало дня', st.day_start_equity ?? '—', 'Деньги + позиции, ₽'],
+    ['Торговый день', st.trading_day ?? '—', '', ''],
+    ['Капитал сейчас', nowEquity !== null ? nowEquity.toLocaleString('ru-RU', {maximumFractionDigits: 2}) : '—',
+      'Деньги + позиции по текущим ценам, ₽',
+      dayChangePct !== null ? (dayChangePct >= 0 ? 'ok' : 'stopped') : ''],
+    ['Изменение с начала дня', dayChangePct !== null ? `${dayChangePct >= 0 ? '+' : ''}${dayChangePct.toFixed(2)}%` : '—',
+      `Было: ${st.day_start_equity ?? '—'} ₽`,
+      dayChangePct !== null ? (dayChangePct >= 0 ? 'ok' : 'stopped') : ''],
+    ['Нереализованный P&L', `${totalPnl >= 0 ? '+' : ''}${totalPnl.toLocaleString('ru-RU', {maximumFractionDigits: 2})} ₽`,
+      'Сумма по всем открытым позициям',
+      totalPnl >= 0 ? 'ok' : 'stopped'],
     [
       'Дневной стоп-лосс',
       st.daily_stopped_out ? 'СРАБОТАЛ' : 'не сработал',
       st.daily_stopped_out ? 'Новые сделки запрещены до завтра' : 'Робот торгует как обычно',
+      st.daily_stopped_out ? 'stopped' : 'ok',
     ],
   ];
-  document.getElementById('cards').innerHTML = cards.map(([label, value, note], i) => `
+  document.getElementById('cards').innerHTML = cards.map(([label, value, note, cls]) => `
     <div class="card"><div class="label">${label}</div>
-      <div class="value ${i === 2 ? (st.daily_stopped_out ? 'stopped' : 'ok') : ''}">${value}</div>
+      <div class="value ${cls}">${value}</div>
       ${note ? `<div class="note">${note}</div>` : ''}
     </div>`).join('');
+
+  const posRows = positions.map(p => {
+    const pnl = parseFloat(p.unrealized_pnl || '0');
+    const tickerTitle = TICKER_RU[p.ticker] ? ` title="${TICKER_RU[p.ticker]}"` : '';
+    return `
+    <tr>
+      <td${tickerTitle}>${p.ticker}</td>
+      <td>${p.lots}</td>
+      <td>${p.average_price}</td>
+      <td>${p.mark_price}</td>
+      <td>${p.market_value}</td>
+      <td class="${pnl >= 0 ? 'status-filled' : 'status-rejected'}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('positions-rows').innerHTML = posRows || '<tr><td colspan="6">Открытых позиций нет</td></tr>';
 
   const rows = (data.recent || []).slice().reverse().map(e => {
     const regimeCls = (e.regime && e.regime !== 'n/a') ? e.regime : 'na';
@@ -326,6 +372,7 @@ def _read_state(path: Path) -> dict:
 def make_handler(cfg: RootConfig, auth_header: str | None):
     journal_path = Path(cfg.journal.jsonl_path)
     state_path = Path(cfg.state_store_path)
+    account_path = Path(cfg.account_snapshot_path)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "TradingRobotMonitor/1.0"
@@ -362,6 +409,7 @@ def make_handler(cfg: RootConfig, auth_header: str | None):
             if self.path.startswith("/api/status"):
                 payload = {
                     "state": _read_state(state_path),
+                    "account": _read_state(account_path),
                     "recent": _tail_jsonl(journal_path, limit=200),
                 }
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

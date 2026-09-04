@@ -75,14 +75,33 @@ trading_robot/
 
 `broker.kind` по умолчанию `mock` (полный `MockBroker`: детерминированный
 стакан по seed, исполнение лимиток при пересечении цены с
-проскальзыванием в bps, деньги/позиции/заявки в памяти). Каркас
-`TInvestAdapter` подготовлен под официальный SDK `tinkoff-investments`
-(пакет `tinkoff.invest`, https://github.com/RussianInvestments/invest-python) —
-каждый метод, где точный вызов SDK не подтверждён, поднимает
-`NotImplementedError` с комментарием, какой официальный RPC/сервис
-подставить. Не смешивайте методы разных брокеров в одном адаптере —
-для ALOR/Finam/BCS пишется отдельный класс, реализующий тот же
-`Protocol BrokerAdapter`.
+проскальзыванием в bps, деньги/позиции/заявки в памяти). Лот и шаг цены
+для `MockBroker` берутся из `instruments[].lot_size`/`price_step` в
+конфиге (по умолчанию 10 и 0.01 — уточните под реальную бумагу).
+
+`broker.kind: tinvest` включает реализованный `TInvestAdapter` поверх
+официального SDK `tinkoff-investments` (пакет `tinkoff.invest`,
+https://github.com/RussianInvestments/invest-python). Методы (`get_quote`,
+`get_orderbook`, `get_bars`, `get_instrument_spec`, `get_account`,
+`place_limit_order`, `cancel_order`) реализованы через проверенные по
+исходному коду SDK сервисы (`MarketDataService`, `InstrumentsService`,
+`OperationsService`, `OrdersService`, `UsersService`) — установка:
+```bash
+pip install 'trading-robot[tinvest]'
+```
+Токен и account_id — только из переменных окружения (`broker.token_env`,
+`broker.account_id_env` в конфиге называют имена, не значения).
+`broker.sandbox: true` — это официальная песочница T-Invest (реальный
+контур брокера в изолированном режиме, НЕ путать с нашим internal
+`MockBroker`). Одно не проверено «вживую» в рамках этой разработки — сам
+gRPC-эндпоинт (нужен боевой токен и сетевой доступ к нему); один
+TODO явно помечен в коде (`used_margin` через
+`UsersService.get_margin_attributes` — поля ответа не проверялись).
+Перед боевым использованием прогоните smoke-test на `sandbox: true` и
+сверьте результат с личным кабинетом.
+
+Не смешивайте методы разных брокеров в одном адаптере — для ALOR/Finam/
+BCS пишется отдельный класс, реализующий тот же `Protocol BrokerAdapter`.
 
 ## 5. Главный цикл
 
@@ -128,11 +147,17 @@ sudo bash deploy/deploy.sh
 ## 8. Веб-панель мониторинга (read-only)
 
 `src/trading_robot/webui/server.py` — отдельный HTTP-процесс на стандартной
-библиотеке Python (без Flask/FastAPI), который читает `journal.jsonl` и
-`state.json` движка и отдаёт HTML-страницу с автообновлением (раз в 3с):
-текущий торговый день, equity на начало дня, флаг дневного стоп-лосса и
-последние 200 решений (`enter/skip/cancel/flatten/sync`) с причиной,
-ценой, лотами, статусом заявки. **У панели нет доступа к `BrokerAdapter`
+библиотеке Python (без Flask/FastAPI), который читает `journal.jsonl`,
+`state.json` и `account.json` движка (последний — снапшот счёта:
+кэш/equity/позиции с нереализованным P&L, перезаписывается каждый такт,
+см. `journal/account_snapshot.py`) и отдаёт русифицированную HTML-страницу
+с автообновлением (раз в 3с): текущий торговый день, капитал сейчас,
+изменение с начала дня, суммарный нереализованный P&L, флаг дневного
+стоп-лосса, таблицу открытых позиций с P&L по каждой, и последние 200
+решений (`enter/skip/cancel/flatten/sync`) с причиной, ценой, лотами,
+статусом заявки — плюс сворачиваемый блок-глоссарий и подсказки при
+наведении для тех, кто не разбирается в трейдинге. **У панели нет доступа
+к `BrokerAdapter`
 и она не может выставить/отменить ни одной заявки** — она только читает
 файлы, которые пишет `RobotEngine`.
 

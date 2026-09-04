@@ -25,6 +25,14 @@ class InstrumentConfig(BaseModel):
     board: str  # DEFAULT: TQBR
     instrument_class: Literal["share", "bond", "future"] = "share"
     expiration: str | None = None  # ISO date, только для future
+    # Спецификация инструмента для MockBroker (лот/шаг цены у разных бумаг
+    # разные — например лот SBER на MOEX равен 10, а у GAZP тоже 10, но у
+    # многих других бумаг лот 1 или 100). Для боевого/sandbox брокера
+    # (broker.kind != mock) эти поля игнорируются — спецификация приходит
+    # напрямую от API брокера через get_instrument_spec().
+    lot_size: int = 10  # DEFAULT — уточните реальный лот бумаги у брокера
+    price_step: Decimal = Decimal("0.01")  # DEFAULT — уточните реальный шаг цены
+    initial_margin_per_lot: Decimal | None = None  # только для FORTS (instrument_class: future)
 
 
 class FeaturesConfig(BaseModel):
@@ -92,6 +100,7 @@ class RootConfig(BaseModel):
     journal: JournalConfig = JournalConfig()
     llm: LlmConfig = LlmConfig()
     state_store_path: str = "./data/state.json"
+    account_snapshot_path: str = "./data/account.json"
     tick_interval_seconds: float = 5.0
 
     @field_validator("instruments")

@@ -6,18 +6,39 @@ trading:
   mode: paper  # paper | live. live включается ТОЛЬКО явным изменением этого поля.
 
 broker:
-  kind: mock  # mock | tinvest | alor | finam | bcs. BROKER не был задан -> DEFAULT: mock (+ каркас tinvest готов).
+  kind: mock  # mock | tinvest | alor | finam | bcs.
+  # kind: tinvest — реальный/sandbox брокер T-Invest (см. brokers/tinvest_adapter.py).
+  #   Требует: pip install 'trading-robot[tinvest]', TINVEST_TOKEN в /etc/tradingrobot.env
+  #   (или окружении процесса), sandbox: true — это официальная песочница T-Invest
+  #   (реальный контур брокера, изолированный от боевых денег), НЕ наш internal MockBroker.
   token_env: TINVEST_TOKEN        # имя переменной окружения с токеном, НЕ сам токен
-  account_id_env: TINVEST_ACCOUNT_ID
+  account_id_env: TINVEST_ACCOUNT_ID  # необязательно: если не задано, берётся первый счёт пользователя
   sandbox: true
 
 instruments:  # DEFAULT: тикеры не были заданы -> пример на TQBR, замените под задачу
   - ticker: SBER
     board: TQBR      # DEFAULT секция: TQBR (акции). Для FORTS указывать board: FORTS + expiration
     instrument_class: share
+    # lot_size/price_step ниже нужны ТОЛЬКО для broker.kind: mock (MockBroker не
+    # знает реальных параметров бумаги). Для tinvest/alor/finam/bcs эти поля
+    # игнорируются — спецификация приходит от API брокера.
+    lot_size: 10            # DEFAULT — уточните реальный лот бумаги у брокера
+    price_step: "0.01"      # DEFAULT — уточните реальный шаг цены у брокера
   - ticker: GAZP
     board: TQBR
     instrument_class: share
+    lot_size: 10
+    price_step: "0.01"
+  # Пример фьючерса FORTS (раскомментируйте и подставьте актуальный тикер/дату
+  # экспирации; class_code срочного рынка не всегда буквально "FORTS" — сверьте
+  # у брокера):
+  # - ticker: RIZ5
+  #   board: FORTS
+  #   instrument_class: future
+  #   expiration: "2025-12-19"
+  #   lot_size: 1
+  #   price_step: "1"
+  #   initial_margin_per_lot: "5000"   # DEFAULT-заглушка для mock — реальное ГО берите у брокера
 
 features:
   short_window: 5          # баров для короткой волатильности/short_return
@@ -61,4 +82,5 @@ llm:
   api_key_env: LLM_API_KEY     # имя переменной окружения с ключом провайдера, НЕ сам ключ
 
 state_store_path: "./data/state.json"
+account_snapshot_path: "./data/account.json"  # читает веб-панель для показа P&L/позиций
 tick_interval_seconds: 5.0

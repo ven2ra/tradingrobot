@@ -16,6 +16,7 @@ import logging
 import time as time_module
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trading_robot.config.loader import RootConfig
@@ -23,6 +24,7 @@ from trading_robot.context.context_filter import CalendarContextFilter, ContextV
 from trading_robot.domain.types import Instrument, InstrumentClass, InstrumentSpec, OrderStatus, Side
 from trading_robot.features.features import compute_features
 from trading_robot.interfaces.broker import BrokerAdapter
+from trading_robot.journal.account_snapshot import build_snapshot, write_account_snapshot
 from trading_robot.journal.journal import Journal
 from trading_robot.regime.regime import Regime, RegimeThresholds, classify_regime, entries_allowed
 from trading_robot.risk.risk_manager import (
@@ -117,6 +119,7 @@ class RobotEngine:
 
         self._state = state_store.load()
         self._daily_tracker: DailyPnlTracker | None = None
+        self._account_snapshot_path = Path(cfg.account_snapshot_path)
 
     def start(self) -> None:
         self._broker.connect()
@@ -171,6 +174,13 @@ class RobotEngine:
 
         mark_prices, specs = self._fetch_marks()
         equity = equity_of(account, mark_prices, specs)
+
+        snapshot = build_snapshot(account, mark_prices, specs, equity, now)
+        try:
+            write_account_snapshot(self._account_snapshot_path, snapshot)
+        except OSError:
+            logger.exception("failed to write account snapshot for web monitor")
+
         assert self._daily_tracker is not None
         stopped_out = self._daily_tracker.update(equity, self._risk_limits.max_daily_loss_pct)
         if stopped_out and not self._state.daily_stopped_out:
