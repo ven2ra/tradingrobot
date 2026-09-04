@@ -11,10 +11,18 @@ smoke-test (--config с trading.mode: paper, broker.kind: tinvest,
 broker.sandbox: true) и сверьте результат с личным кабинетом брокера.
 
 Контуры:
-  * INVEST_GRPC_API          — боевой контур (реальные деньги).
-  * INVEST_GRPC_API_SANDBOX  — официальная песочница T-Invest (не путать
-    с нашим internal paper-режимом MockBroker: здесь ордера реально
-    уходят на сторону брокера, просто в изолированном тестовом контуре).
+  * INVEST_GRPC_API          (invest-public-api.tinkoff.ru) — боевой
+    контур (реальные деньги).
+  * INVEST_GRPC_API_SANDBOX  (sandbox-invest-public-api.tinkoff.ru) —
+    официальная песочница T-Invest (не путать с нашим internal
+    paper-режимом MockBroker: здесь ордера реально уходят на сторону
+    брокера, просто в изолированном тестовом контуре). ВАЖНО: песочница
+    живёт на ОТДЕЛЬНОМ наборе методов SDK (SandboxService.*, не
+    UsersService/OperationsService/OrdersService) — счета, портфель,
+    заявки в sandbox не пересекаются с боевыми и адресуются иначе.
+    Рыночные данные (котировки/стакан/свечи/спецификации инструментов)
+    для обоих контуров общие — MarketDataService/InstrumentsService
+    используются одинаково независимо от sandbox.
 
 Секреты: токен и account_id читаются ТОЛЬКО из переменных окружения
 (имена задаются в config.yaml: broker.token_env, broker.account_id_env).
@@ -22,10 +30,11 @@ broker.sandbox: true) и сверьте результат с личным ка�
 """
 from __future__ import annotations
 
+import concurrent.futures
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from trading_robot.domain.types import (
     AccountState,
@@ -78,6 +87,14 @@ _INTERVAL_MAP: dict[str, tuple[str, timedelta]] = {
     "1d": ("CANDLE_INTERVAL_DAY", timedelta(days=1)),
 }
 
+_T = TypeVar("_T")
+# Таймаут на КАЖДЫЙ отдельный вызов gRPC-метода SDK. У SDK нет дефолтного
+# таймаута — без него сетевая проблема (заблокированный исходящий gRPC/443,
+# зависший TLS-хендшейк и т.п.) вешает такт робота НАВСЕГДА и молча: ни
+# ошибки, ни следующей записи в журнал. Обёртка ниже гарантирует, что зависший
+# вызов превращается в понятную ошибку максимум через это время.
+_CALL_TIMEOUT_SECONDS = 10.0
+
 
 class TInvestAdapter:
     """Реализует Protocol BrokerAdapter (см. interfaces/broker.py) поверх
@@ -90,10 +107,12 @@ class TInvestAdapter:
         token_env: str = "TINVEST_TOKEN",
         account_id_env: str = "TINVEST_ACCOUNT_ID",
         sandbox: bool = True,
+        call_timeout_seconds: float = _CALL_TIMEOUT_SECONDS,
     ) -> None:
         self._token_env = token_env
         self._account_id_env = account_id_env
         self._sandbox = sandbox
+        self._call_timeout = call_timeout_seconds
         self._client_cm: Any = None
         self._services: Any = None
         self._connected = False
@@ -102,6 +121,23 @@ class TInvestAdapter:
         # и обратный кэш figi -> Instrument для сборки позиций из портфеля.
         self._instrument_cache: dict[str, Any] = {}
         self._figi_to_instrument: dict[str, Instrument] = {}
+        # Один воркер: gRPC-вызовы этого адаптера в рамках одного такта и так
+        # выполняются последовательно (см. engine/loop.py — синхронный цикл),
+        # пул нужен только чтобы дать вызову таймаут через Future.result().
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="tinvest-io")
+
+    def _call(self, fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+        future = self._executor.submit(fn, *args, **kwargs)
+        try:
+            return future.result(timeout=self._call_timeout)
+        except concurrent.futures.TimeoutError as exc:
+            name = getattr(fn, "__qualname__", getattr(fn, "__name__", repr(fn)))
+            raise TInvestConfigError(
+                f"T-Invest API не ответил за {self._call_timeout:.0f}с на вызове {name} — "
+                "проверьте исходящий доступ с сервера к "
+                f"{'sandbox-' if self._sandbox else ''}invest-public-api.tinkoff.ru:443 "
+                "(firewall/security group, DNS)"
+            ) from exc
 
     def _read_env(self, name: str) -> str:
         value = os.environ.get(name)
@@ -122,7 +158,7 @@ class TInvestAdapter:
         token = self._read_env(self._token_env)
         target = INVEST_GRPC_API_SANDBOX if self._sandbox else INVEST_GRPC_API
         self._client_cm = Client(token, target=target)
-        self._services = self._client_cm.__enter__()
+        self._services = self._call(self._client_cm.__enter__)
         self._connected = True
         self._account_id = self._resolve_account_id()
 
@@ -132,6 +168,7 @@ class TInvestAdapter:
         self._connected = False
         self._client_cm = None
         self._services = None
+        self._executor.shutdown(wait=False)
 
     def is_connected(self) -> bool:
         return self._connected
@@ -141,8 +178,17 @@ class TInvestAdapter:
             raise TInvestConfigError("TInvestAdapter не подключён — вызовите connect() перед использованием")
 
     def _resolve_account_id(self) -> str:
-        # UsersService.get_accounts() -> GetAccountsResponse.accounts: List[Account]
-        accounts = self._services.users.get_accounts().accounts
+        # Sandbox и боевой контур адресуют счета РАЗНЫМИ методами:
+        # SandboxService.get_sandbox_accounts() в песочнице,
+        # UsersService.get_accounts() на боевом контуре. Если счетов в
+        # песочнице ещё нет — их можно создать заранее в личном кабинете
+        # или через SandboxService.open_sandbox_account (не делаем это
+        # автоматически, чтобы не плодить тестовые счета молча).
+        if self._sandbox:
+            accounts = self._call(self._services.sandbox.get_sandbox_accounts).accounts
+        else:
+            accounts = self._call(self._services.users.get_accounts).accounts
+
         configured = os.environ.get(self._account_id_env)
         if configured:
             for acc in accounts:
@@ -152,7 +198,11 @@ class TInvestAdapter:
                 f"счёт {configured} (из {self._account_id_env}) не найден среди счетов пользователя"
             )
         if not accounts:
-            raise TInvestConfigError("у пользователя нет ни одного счёта T-Invest")
+            where = "в sandbox" if self._sandbox else "у пользователя"
+            raise TInvestConfigError(
+                f"нет ни одного счёта {where} — для sandbox создайте его в личном кабинете "
+                "или через SandboxService.open_sandbox_account"
+            )
         return accounts[0].id
 
     # -- instrument resolution ------------------------------------------------
@@ -167,11 +217,17 @@ class TInvestAdapter:
         # всегда буквально равен "FORTS").
         id_type = InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER
         if instrument.instrument_class == InstrumentClass.SHARE:
-            resp = self._services.instruments.share_by(id_type=id_type, class_code=instrument.board, id=instrument.ticker)
+            resp = self._call(
+                self._services.instruments.share_by, id_type=id_type, class_code=instrument.board, id=instrument.ticker
+            )
         elif instrument.instrument_class == InstrumentClass.BOND:
-            resp = self._services.instruments.bond_by(id_type=id_type, class_code=instrument.board, id=instrument.ticker)
+            resp = self._call(
+                self._services.instruments.bond_by, id_type=id_type, class_code=instrument.board, id=instrument.ticker
+            )
         elif instrument.instrument_class == InstrumentClass.FUTURE:
-            resp = self._services.instruments.future_by(id_type=id_type, class_code=instrument.board, id=instrument.ticker)
+            resp = self._call(
+                self._services.instruments.future_by, id_type=id_type, class_code=instrument.board, id=instrument.ticker
+            )
         else:
             raise TInvestConfigError(f"неподдерживаемый instrument_class: {instrument.instrument_class}")
 
@@ -184,10 +240,10 @@ class TInvestAdapter:
     def get_quote(self, instrument: Instrument) -> Quote:
         self._require_connected()
         obj = self._resolve_instrument(instrument)
-        last_resp = self._services.market_data.get_last_prices(figi=[obj.figi])
+        last_resp = self._call(self._services.market_data.get_last_prices, figi=[obj.figi])
         last = quotation_to_decimal(last_resp.last_prices[0].price) if last_resp.last_prices else Decimal("0")
 
-        ob = self._services.market_data.get_order_book(figi=obj.figi, depth=1)
+        ob = self._call(self._services.market_data.get_order_book, figi=obj.figi, depth=1)
         bid = quotation_to_decimal(ob.bids[0].price) if ob.bids else last
         ask = quotation_to_decimal(ob.asks[0].price) if ob.asks else last
         timestamp = ob.orderbook_ts or datetime.now(timezone.utc)
@@ -197,7 +253,7 @@ class TInvestAdapter:
     def get_orderbook(self, instrument: Instrument, depth: int) -> OrderBook:
         self._require_connected()
         obj = self._resolve_instrument(instrument)
-        ob = self._services.market_data.get_order_book(figi=obj.figi, depth=depth)
+        ob = self._call(self._services.market_data.get_order_book, figi=obj.figi, depth=depth)
         bids = tuple(OrderBookLevel(price=quotation_to_decimal(o.price), lots=o.quantity) for o in ob.bids)
         asks = tuple(OrderBookLevel(price=quotation_to_decimal(o.price), lots=o.quantity) for o in ob.asks)
         timestamp = ob.orderbook_ts or datetime.now(timezone.utc)
@@ -215,7 +271,8 @@ class TInvestAdapter:
         # Небольшой запас (x2) на случай пропусков свечей (выходные/паузы в торгах).
         from_ = now - bar_duration * limit * 2
 
-        resp = self._services.market_data.get_candles(
+        resp = self._call(
+            self._services.market_data.get_candles,
             figi=obj.figi, from_=from_, to=now, interval=candle_interval, limit=limit,
         )
         candles = resp.candles[-limit:]
@@ -258,9 +315,14 @@ class TInvestAdapter:
         self._require_connected()
         assert self._account_id is not None
 
-        portfolio = self._services.operations.get_portfolio(account_id=self._account_id)
-        positions_resp = self._services.operations.get_positions(account_id=self._account_id)
-        orders_resp = self._services.orders.get_orders(account_id=self._account_id)
+        if self._sandbox:
+            portfolio = self._call(self._services.sandbox.get_sandbox_portfolio, account_id=self._account_id)
+            positions_resp = self._call(self._services.sandbox.get_sandbox_positions, account_id=self._account_id)
+            orders_resp = self._call(self._services.sandbox.get_sandbox_orders, account_id=self._account_id)
+        else:
+            portfolio = self._call(self._services.operations.get_portfolio, account_id=self._account_id)
+            positions_resp = self._call(self._services.operations.get_positions, account_id=self._account_id)
+            orders_resp = self._call(self._services.orders.get_orders, account_id=self._account_id)
 
         currency = None
         cash = Decimal("0")
@@ -339,7 +401,9 @@ class TInvestAdapter:
         obj = self._resolve_instrument(request.instrument)
 
         direction = OrderDirection.ORDER_DIRECTION_BUY if request.side == Side.BUY else OrderDirection.ORDER_DIRECTION_SELL
-        response = self._services.orders.post_order(
+        post_fn = self._services.sandbox.post_sandbox_order if self._sandbox else self._services.orders.post_order
+        response = self._call(
+            post_fn,
             figi=obj.figi,
             quantity=request.lots,
             price=decimal_to_quotation(request.price),
@@ -359,7 +423,8 @@ class TInvestAdapter:
     def cancel_order(self, broker_order_id: str) -> None:
         self._require_connected()
         assert self._account_id is not None
-        self._services.orders.cancel_order(account_id=self._account_id, order_id=broker_order_id)
+        cancel_fn = self._services.sandbox.cancel_sandbox_order if self._sandbox else self._services.orders.cancel_order
+        self._call(cancel_fn, account_id=self._account_id, order_id=broker_order_id)
 
 
 if _TINKOFF_IMPORT_ERROR is None:
