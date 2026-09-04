@@ -43,6 +43,13 @@ from trading_robot.strategy.grid_strategy import (
     compute_lots_for_level,
     level_to_order_request,
 )
+from trading_robot.strategy.trend_strategy import (
+    TrendConfig,
+    build_trend_entry,
+    build_trend_exit,
+    compute_trend_entry_lots,
+    trend_level_to_order_request,
+)
 
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -101,6 +108,15 @@ def grid_config_from_config(cfg: RootConfig) -> GridConfig:
     )
 
 
+def trend_config_from_config(cfg: RootConfig) -> TrendConfig:
+    return TrendConfig(
+        entry_notional_fraction=cfg.strategy_trend.entry_notional_fraction,
+        aggressive_offset_bps=cfg.strategy_trend.aggressive_offset_bps,
+        stop_loss_pct=cfg.strategy_trend.stop_loss_pct,
+        take_profit_pct=cfg.strategy_trend.take_profit_pct,
+    )
+
+
 class RobotEngine:
     def __init__(
         self,
@@ -121,6 +137,7 @@ class RobotEngine:
         self._risk_limits = risk_limits_from_config(cfg)
         self._regime_thresholds = regime_thresholds_from_config(cfg)
         self._grid_config = grid_config_from_config(cfg)
+        self._trend_config = trend_config_from_config(cfg)
         self._context_filter = context_filter or CalendarContextFilter(events=[])
         self._llm_provider = llm_provider if cfg.llm.enabled else None
 
@@ -321,6 +338,11 @@ class RobotEngine:
             limits=self._risk_limits,
         )
 
+        try:
+            self._manage_trend_exits(account, mark_prices, specs, now)
+        except Exception:
+            logger.exception("failed to manage trend-strategy exits, continuing tick")
+
         for instrument in self._instruments:
             try:
                 self._process_instrument(instrument, account, mark_prices, specs, risk_decision, now)
@@ -339,6 +361,84 @@ class RobotEngine:
                     )
                 except Exception:
                     logger.exception("failed to even journal the error above for %s", instrument.ticker)
+
+    def _manage_trend_exits(
+        self,
+        account: AccountState,
+        mark_prices: dict[str, Decimal],
+        specs: dict[str, InstrumentSpec],
+        now: datetime,
+    ) -> None:
+        """Отдельный проход ПЕРЕД обработкой инструментов текущего выбора.
+
+        Software-стоп/тейк трендовой стратегии обязан продолжать управлять
+        уже открытой позицией, даже если тикер убрали из списка отслеживания
+        на панели или сейчас действует дневной стоп-лосс (тот запрещает
+        НОВЫЕ входы, а не закрытие уже открытых позиций) — поэтому эта
+        проверка идёт независимо от risk_decision/self._instruments.
+        """
+        if not self._state.trend_open_instruments:
+            return
+        positions_by_key = {p.instrument.key: p for p in account.positions}
+        tick_bucket = now.date().isoformat()
+        still_open: list[str] = []
+        for key in self._state.trend_open_instruments:
+            position = positions_by_key.get(key)
+            if position is None or position.lots == 0:
+                continue  # позиция закрылась — снимаем метку "управляется трендовой стратегией"
+
+            mark_price = mark_prices.get(key)
+            spec = specs.get(key)
+            if mark_price is None or spec is None:
+                still_open.append(key)  # нет свежих данных в этом такте — просто ждём следующего
+                continue
+
+            instrument = position.instrument
+            level, reason = build_trend_exit(
+                instrument=instrument, position=position, mark_price=mark_price,
+                config=self._trend_config, tick_bucket=tick_bucket,
+            )
+            if level is None:
+                still_open.append(key)
+                continue
+            if level.client_order_id in self._state.known_client_order_ids:
+                still_open.append(key)
+                continue
+
+            request = trend_level_to_order_request(level, instrument, abs(position.lots))
+            if request is None:
+                still_open.append(key)
+                continue
+            try:
+                ack = self._broker.place_limit_order(request)
+            except Exception as exc:
+                self._journal.record(
+                    ticker=instrument.ticker, regime="n/a", action="skip",
+                    reason=f"place_limit_order failed: {exc}", account=account,
+                    client_order_id=level.client_order_id, price=level.price, lots=abs(position.lots),
+                )
+                still_open.append(key)
+                continue
+            self._state.known_client_order_ids.append(level.client_order_id)
+            self._store.save(self._state)
+            self._journal.record(
+                ticker=instrument.ticker, regime="n/a", action="enter",
+                reason=reason, account=account, client_order_id=ack.client_order_id,
+                broker_order_id=ack.broker_order_id, price=level.price, lots=abs(position.lots),
+                status=ack.status.value,
+            )
+            if ack.status != OrderStatus.FILLED:
+                # Не исполнилась сразу этим же тактом (осталась висеть в
+                # стакане) — позиция всё ещё под управлением трендовой
+                # стратегии, следующий такт продолжит следить за ней.
+                still_open.append(key)
+            # Если исполнилась (ack.status == FILLED) — инструмент НЕ
+            # добавляется в still_open, метка "trend_open" снимается сразу,
+            # не дожидаясь следующего такта.
+
+        if still_open != self._state.trend_open_instruments:
+            self._state.trend_open_instruments = still_open
+            self._store.save(self._state)
 
     def _process_instrument(self, instrument, account, mark_prices, specs, risk_decision, now: datetime) -> None:
         ticker = instrument.ticker
@@ -410,81 +510,153 @@ class RobotEngine:
                 break
 
         tick_bucket = now.date().isoformat()
-        plan = build_grid_plan(
-            instrument=instrument,
-            spec=spec,
-            mid_price=features.mid,
-            volatility=features.volatility,
-            regime=regime,
-            current_inventory_lots=current_inventory,
-            trend_direction=trend_direction,
-            config=self._grid_config,
-            tick_bucket=tick_bucket,
-        )
-
-        if not plan.levels:
-            self._journal.record(
-                ticker=ticker, regime=regime.value, action="skip",
-                reason=plan.reason, account=account,
-            )
-            return
-
         allowed_notional = max_allowed_notional_for_instrument(
             account=account, mark_prices=mark_prices, specs=specs, instrument=instrument, limits=self._risk_limits,
         )
-        per_level_notional = allowed_notional * self._grid_config.level_notional_fraction * context_verdict.size_multiplier
 
-        for level in plan.levels:
-            if level.client_order_id in self._state.known_client_order_ids:
-                continue  # уже отправляли этот логический уровень в этом торговом дне
+        if regime == Regime.RANGE:
+            plan = build_grid_plan(
+                instrument=instrument,
+                spec=spec,
+                mid_price=features.mid,
+                volatility=features.volatility,
+                regime=regime,
+                current_inventory_lots=current_inventory,
+                trend_direction=trend_direction,
+                config=self._grid_config,
+                tick_bucket=tick_bucket,
+            )
 
-            lots = compute_lots_for_level(allowed_notional=per_level_notional, price=level.price, spec=spec)
-            if lots <= 0:
+            if not plan.levels:
                 self._journal.record(
                     ticker=ticker, regime=regime.value, action="skip",
-                    reason="computed lots=0 after risk/notional constraints",
-                    account=account, price=level.price,
+                    reason=plan.reason, account=account,
                 )
-                continue
+                return
 
-            if instrument.instrument_class == InstrumentClass.FUTURE and spec.initial_margin_per_lot is not None:
-                margin_decision = check_forts_margin(
-                    account=account, instrument=instrument,
-                    additional_margin_required=spec.initial_margin_per_lot * lots,
-                )
-                if not margin_decision.entries_allowed:
+            per_level_notional = allowed_notional * self._grid_config.level_notional_fraction * context_verdict.size_multiplier
+
+            for level in plan.levels:
+                if level.client_order_id in self._state.known_client_order_ids:
+                    continue  # уже отправляли этот логический уровень в этом торговом дне
+
+                lots = compute_lots_for_level(allowed_notional=per_level_notional, price=level.price, spec=spec)
+                if lots <= 0:
                     self._journal.record(
                         ticker=ticker, regime=regime.value, action="skip",
-                        reason=margin_decision.reason, account=account,
+                        reason="computed lots=0 after risk/notional constraints",
+                        account=account, price=level.price,
                     )
                     continue
 
-            request = level_to_order_request(level, instrument, lots)
-            if request is None:
-                continue
+                if instrument.instrument_class == InstrumentClass.FUTURE and spec.initial_margin_per_lot is not None:
+                    margin_decision = check_forts_margin(
+                        account=account, instrument=instrument,
+                        additional_margin_required=spec.initial_margin_per_lot * lots,
+                    )
+                    if not margin_decision.entries_allowed:
+                        self._journal.record(
+                            ticker=ticker, regime=regime.value, action="skip",
+                            reason=margin_decision.reason, account=account,
+                        )
+                        continue
 
-            try:
-                ack = self._broker.place_limit_order(request)
-            except Exception as exc:
-                # Брокер реально отклоняет/не может исполнить отдельные заявки
-                # (неверная цена/лот для конкретной бумаги, недостаточно ГО,
-                # временный сбой сети и т.п.) — это не должно ронять
-                # обработку остальных уровней/инструментов, только эту заявку.
-                # client_order_id НЕ добавляем в known_client_order_ids —
-                # заявка реально не ушла, попробуем снова на следующем такте.
+                request = level_to_order_request(level, instrument, lots)
+                if request is None:
+                    continue
+
+                try:
+                    ack = self._broker.place_limit_order(request)
+                except Exception as exc:
+                    # Брокер реально отклоняет/не может исполнить отдельные заявки
+                    # (неверная цена/лот для конкретной бумаги, недостаточно ГО,
+                    # временный сбой сети и т.п.) — это не должно ронять
+                    # обработку остальных уровней/инструментов, только эту заявку.
+                    # client_order_id НЕ добавляем в known_client_order_ids —
+                    # заявка реально не ушла, попробуем снова на следующем такте.
+                    self._journal.record(
+                        ticker=ticker, regime=regime.value, action="skip",
+                        reason=f"place_limit_order failed: {exc}", account=account,
+                        client_order_id=level.client_order_id, price=level.price, lots=lots,
+                    )
+                    continue
+                self._state.known_client_order_ids.append(level.client_order_id)
+                self._store.save(self._state)
+
+                self._journal.record(
+                    ticker=ticker, regime=regime.value, action="enter",
+                    reason=f"grid level {level.level_index} {level.side.value}",
+                    account=account, client_order_id=ack.client_order_id,
+                    broker_order_id=ack.broker_order_id, price=level.price, lots=lots,
+                    status=ack.status.value,
+                )
+            return
+
+        # regime здесь всегда UPTREND/DOWNTREND — entries_allowed() выше уже
+        # отсеял SHOCK/LOW_LIQUIDITY/UNCERTAIN, а RANGE обработан веткой выше.
+        if not self._cfg.strategy_trend.enabled:
+            self._journal.record(
+                ticker=ticker, regime=regime.value, action="skip",
+                reason="trend strategy disabled in config", account=account,
+            )
+            return
+
+        entry_level, entry_reason = build_trend_entry(
+            instrument=instrument, regime=regime, mid_price=features.mid,
+            current_inventory_lots=current_inventory, config=self._trend_config, tick_bucket=tick_bucket,
+        )
+        if entry_level is None:
+            self._journal.record(
+                ticker=ticker, regime=regime.value, action="skip",
+                reason=entry_reason, account=account,
+            )
+            return
+        if entry_level.client_order_id in self._state.known_client_order_ids:
+            return  # уже пытались войти по этому тренду сегодня
+
+        entry_notional = allowed_notional * self._trend_config.entry_notional_fraction * context_verdict.size_multiplier
+        lots = compute_trend_entry_lots(allowed_notional=entry_notional, price=entry_level.price, lot_size=spec.lot_size)
+        if lots <= 0:
+            self._journal.record(
+                ticker=ticker, regime=regime.value, action="skip",
+                reason="computed lots=0 after risk/notional constraints",
+                account=account, price=entry_level.price,
+            )
+            return
+
+        if instrument.instrument_class == InstrumentClass.FUTURE and spec.initial_margin_per_lot is not None:
+            margin_decision = check_forts_margin(
+                account=account, instrument=instrument,
+                additional_margin_required=spec.initial_margin_per_lot * lots,
+            )
+            if not margin_decision.entries_allowed:
                 self._journal.record(
                     ticker=ticker, regime=regime.value, action="skip",
-                    reason=f"place_limit_order failed: {exc}", account=account,
-                    client_order_id=level.client_order_id, price=level.price, lots=lots,
+                    reason=margin_decision.reason, account=account,
                 )
-                continue
-            self._state.known_client_order_ids.append(level.client_order_id)
-            self._store.save(self._state)
+                return
 
+        request = trend_level_to_order_request(entry_level, instrument, lots)
+        if request is None:
+            return
+
+        try:
+            ack = self._broker.place_limit_order(request)
+        except Exception as exc:
             self._journal.record(
-                ticker=ticker, regime=regime.value, action="enter",
-                reason=f"grid level {level.level_index} {level.side.value}",
-                account=account, client_order_id=ack.client_order_id,
-                broker_order_id=ack.broker_order_id, price=level.price, lots=lots,
-                status=ack.status.value,
+                ticker=ticker, regime=regime.value, action="skip",
+                reason=f"place_limit_order failed: {exc}", account=account,
+                client_order_id=entry_level.client_order_id, price=entry_level.price, lots=lots,
             )
+            return
+        self._state.known_client_order_ids.append(entry_level.client_order_id)
+        if instrument.key not in self._state.trend_open_instruments:
+            self._state.trend_open_instruments.append(instrument.key)
+        self._store.save(self._state)
+
+        self._journal.record(
+            ticker=ticker, regime=regime.value, action="enter",
+            reason=entry_reason, account=account, client_order_id=ack.client_order_id,
+            broker_order_id=ack.broker_order_id, price=entry_level.price, lots=lots,
+            status=ack.status.value,
+        )

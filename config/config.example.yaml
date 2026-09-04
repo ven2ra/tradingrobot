@@ -62,6 +62,16 @@ strategy:
   min_step_price_steps: 2           # минимальный шаг сетки, в шагах цены
   level_notional_fraction: "0.1"    # доля разрешённого капитала на один уровень сетки
 
+# Трендовая стратегия — работает ТОЛЬКО в uptrend/downtrend (сетка выше — только
+# в range, они никогда не конкурируют за один такт). Пробойный вход + выход по
+# фиксированному % от цены входа (stop_loss_pct/take_profit_pct), без усреднения.
+strategy_trend:
+  enabled: true
+  entry_notional_fraction: "0.15"   # доля разрешённого капитала на вход
+  aggressive_offset_bps: "15"       # насколько лимитка пересекает спред, чтобы исполниться сразу
+  stop_loss_pct: "0.015"            # DEFAULT 1.5% от цены входа
+  take_profit_pct: "0.03"           # DEFAULT 3% от цены входа
+
 risk:
   max_daily_loss_pct: "0.01"      # DEFAULT 1%
   max_instrument_weight: "0.20"   # DEFAULT 20%

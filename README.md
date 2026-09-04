@@ -19,8 +19,22 @@
 5. **ContextFilter**: календарь событий (дивиденды/отчётность/ЦБ) + опционально
    внешний LLM-вердикт (строго `{"trade_allowed", "size_multiplier",
    "reason"}`, без доступа к брокеру). `trade_allowed=false` → `skip`.
-6. **Strategy** (сетка): включается только в `range`; шаг = f(volatility,
-   price_step); запрет докупки против последнего известного тренда.
+6. **Strategy** — две стратегии, взаимоисключающие по режиму (никогда не
+   конкурируют за один такт):
+   * **Сетка** (`strategy/grid_strategy.py`): включается только в `range`;
+     шаг = f(volatility, price_step); запрет докупки против последнего
+     известного тренда.
+   * **Тренд** (`strategy/trend_strategy.py`): включается только в
+     `uptrend`/`downtrend` — пробойный вход (агрессивная лимитка,
+     пересекающая спред, чтобы исполниться сразу), без усреднения (пока
+     позиция открыта, новых входов нет), выход по фиксированному %
+     стоп-лосс/тейк-профит от цены входа (`strategy_trend.*` в конфиге).
+     Это software-стоп: отдельная стоп-заявка бирже не отправляется —
+     движок сам сравнивает цену с порогами каждый такт и выставляет
+     закрывающую лимитку (`RobotEngine._manage_trend_exits`, идёт
+     независимо от выбора инструментов на панели и от дневного
+     стоп-лосса — тот запрещает новые входы, а не закрытие уже открытых
+     позиций).
 7. Расчёт объёма уровня: `lots = floor(allowed_notional / (price *
    lot_size))`, отсечение `lots < 1`; для FORTS — проверка ГО.
 8. **Execution**: только лимитные заявки с идемпотентным
@@ -49,8 +63,10 @@ trading_robot/
       context_filter.py     # календарный ContextFilter
       llm_context.py        # опциональный LLM-вердикт, без доступа к брокеру
     strategy/grid_strategy.py
+    strategy/trend_strategy.py
     risk/risk_manager.py
     journal/journal.py
+    journal/account_snapshot.py  # снимок счёта для веб-панели (позиции + открытые заявки)
     store/state_store.py
     engine/loop.py           # главный sync-цикл
     config/loader.py         # pydantic v2 модели + YAML
@@ -59,9 +75,14 @@ trading_robot/
     conftest.py
     test_lot_calc.py
     test_grid_regime.py
+    test_trend_strategy.py
+    test_trend_engine_integration.py
     test_risk_gates.py        # cash reserve, max instruments, connection loss, daily stop
     test_idempotent_order.py
     test_context_filter.py
+    test_position_flip.py     # разворот позиции через 0 (long -> short и обратно)
+    test_order_status_reconcile.py
+    test_account_snapshot.py
 ```
 
 ## 3. Конфигурация

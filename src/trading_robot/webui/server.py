@@ -182,8 +182,11 @@ INDEX_HTML = """<!doctype html>
     <div class="wrap" style="max-height:none">
       <table>
         <thead><tr>
-          <th>Тикер</th><th>Сторона</th><th>Цена</th><th>Лоты</th>
+          <th>Тикер</th><th>Сторона</th>
+          <th>Цена<span class="hint" title="Цена ОДНОЙ БУМАГИ (не лота и не всей заявки) — так задаётся любая лимитная заявка на бирже.">?</span></th>
+          <th>Лоты</th>
           <th>Исполнено<span class="hint" title="Сколько лотов из заявки уже исполнено частично (0, если исполнения ещё не было).">?</span></th>
+          <th>Сумма заявки<span class="hint" title="Полная сумма заявки в рублях: цена × размер лота × количество лотов. Это НЕ то же самое, что колонка «Цена» слева — та цена одной бумаги.">?</span></th>
           <th>Статус</th><th>ID заявки</th>
         </tr></thead>
         <tbody id="orders-rows"></tbody>
@@ -312,6 +315,16 @@ const REASON_RULES = [
   [/^order no longer active: inferred cancelled.*$/, () => 'Заявка пропала из активных на бирже, а позиция не изменилась — вывод: скорее всего отменена или истёк срок действия'],
   [/^place_limit_order failed:.*ratelimit_remaining=['"]?0.*$/, () => 'Заявка не отправлена: биржа временно ограничила частоту запросов — робот повторит попытку на следующем такте (это не отмена и не отказ по самой заявке)'],
   [/^place_limit_order failed: (.+)$/, m => `Заявка не отправлена, брокер вернул ошибку: ${m[1]}`],
+  [/^trend strategy disabled in config$/, () => 'Трендовая стратегия выключена в конфиге'],
+  [/^trend entry skipped: already have a position \((-?\d+) lots\), no averaging$/, m => `Вход по тренду пропущен: по инструменту уже есть позиция (${m[1]} лот.) — усреднение запрещено`],
+  [/^trend entry skipped: regime=(\w+) is not uptrend\/downtrend$/, m => `Вход по тренду недоступен: режим рынка «${REGIME_RU[m[1]] || m[1]}»`],
+  [/^breakout entry: (buy|sell) at ([\d.]+) \(regime=(\w+)\)$/, m => `Пробойный вход по тренду: ${m[1] === 'buy' ? 'покупка' : 'продажа'} по ${m[2]} (режим: ${REGIME_RU[m[3]] || m[3]})`],
+  [/^trend exit skipped: no position$/, () => 'Управление трендовой позицией: позиции уже нет'],
+  [/^trend exit skipped: invalid entry price$/, () => 'Управление трендовой позицией: некорректная цена входа'],
+  [/^long stop-loss hit: mark=([\d.]+) <= stop=([\d.]+)$/, m => `Стоп-лосс по лонгу: цена ${m[1]} ≤ уровня стопа ${m[2]} — закрываем позицию`],
+  [/^long take-profit hit: mark=([\d.]+) >= target=([\d.]+)$/, m => `Тейк-профит по лонгу: цена ${m[1]} ≥ цели ${m[2]} — фиксируем прибыль`],
+  [/^short stop-loss hit: mark=([\d.]+) >= stop=([\d.]+)$/, m => `Стоп-лосс по шорту: цена ${m[1]} ≥ уровня стопа ${m[2]} — закрываем позицию`],
+  [/^short take-profit hit: mark=([\d.]+) <= target=([\d.]+)$/, m => `Тейк-профит по шорту: цена ${m[1]} ≤ цели ${m[2]} — фиксируем прибыль`],
 ];
 
 function translateReason(text) {
@@ -389,6 +402,9 @@ async function refresh() {
   const orders = acc.orders || [];
   const orderRows = orders.map(o => {
     const tickerTitle = TICKER_RU[o.ticker] ? ` title="${TICKER_RU[o.ticker]}"` : '';
+    const notional = o.notional !== null && o.notional !== undefined
+      ? parseFloat(o.notional).toLocaleString('ru-RU', {maximumFractionDigits: 2}) + ' ₽'
+      : '<span class="muted">—</span>';
     return `
     <tr>
       <td${tickerTitle}>${o.ticker}</td>
@@ -396,11 +412,12 @@ async function refresh() {
       <td>${o.price}</td>
       <td>${o.lots}</td>
       <td>${o.filled_lots}</td>
+      <td>${notional}</td>
       <td class="status-${o.status || ''}">${STATUS_RU[o.status ?? ''] ?? o.status ?? '—'}</td>
       <td class="muted">${o.client_order_id ?? '—'}</td>
     </tr>`;
   }).join('');
-  document.getElementById('orders-rows').innerHTML = orderRows || '<tr><td colspan="7">Открытых заявок нет</td></tr>';
+  document.getElementById('orders-rows').innerHTML = orderRows || '<tr><td colspan="8">Открытых заявок нет</td></tr>';
 
   const rows = (data.recent || []).slice().reverse().map(e => {
     const regimeCls = (e.regime && e.regime !== 'n/a') ? e.regime : 'na';

@@ -24,6 +24,12 @@ class RobotState:
     last_trend_by_instrument: dict[str, str] = field(default_factory=dict)
     # какие client_order_id уже были отправлены (для восстановления после рестарта).
     known_client_order_ids: list[str] = field(default_factory=list)
+    # instrument.key, по которым открытая позиция принадлежит ИМЕННО трендовой
+    # стратегии (trend_strategy.py) — нужно, чтобы её software-стоп/тейк не
+    # начал управлять позицией, накопленной сеткой (у той своя логика риска).
+    # Инструмент добавляется сюда при успешном trend-входе и убирается, когда
+    # позиция по нему закрылась (см. RobotEngine._process_instrument).
+    trend_open_instruments: list[str] = field(default_factory=list)
 
 
 class StateStore:

@@ -57,6 +57,18 @@ class StrategyGridConfig(BaseModel):
     level_notional_fraction: Decimal = Decimal("0.1")
 
 
+class StrategyTrendConfig(BaseModel):
+    enabled: bool = True
+    # Доля allowed_notional (того же расчёта, что у сетки), выделяемая на вход.
+    entry_notional_fraction: Decimal = Decimal("0.15")
+    # Насколько агрессивно (в bps от mid) лимитка входа/выхода пересекает
+    # спред, чтобы исполниться сразу, а не ждать в стакане, как уровни сетки.
+    aggressive_offset_bps: Decimal = Decimal("15")
+    # Фиксированный % от цены входа — стоп-лосс и тейк-профит.
+    stop_loss_pct: Decimal = Decimal("0.015")  # DEFAULT 1.5%
+    take_profit_pct: Decimal = Decimal("0.03")  # DEFAULT 3%
+
+
 class RiskConfig(BaseModel):
     max_daily_loss_pct: Decimal = Decimal("0.01")  # DEFAULT 1%
     max_instrument_weight: Decimal = Decimal("0.20")  # DEFAULT 20%
@@ -116,6 +128,7 @@ class RootConfig(BaseModel):
     features: FeaturesConfig = FeaturesConfig()
     regime: RegimeConfig = RegimeConfig()
     strategy: StrategyGridConfig = StrategyGridConfig()
+    strategy_trend: StrategyTrendConfig = StrategyTrendConfig()
     risk: RiskConfig = RiskConfig()
     session: SessionConfig = SessionConfig()
     journal: JournalConfig = JournalConfig()

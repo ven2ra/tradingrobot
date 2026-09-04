@@ -36,9 +36,10 @@ class OrderSnapshot:
     ticker: str
     board: str
     side: str
-    price: str  # str(Decimal)
+    price: str  # str(Decimal) — цена ЗА ЕДИНИЦУ инструмента, не за лот и не сумма заявки
     lots: int
     filled_lots: int
+    notional: str | None  # str(Decimal) — сумма заявки целиком: price * lot_size * lots. None, если lot_size неизвестен в этом такте
     status: str
     client_order_id: str
     broker_order_id: str | None
@@ -94,6 +95,8 @@ def build_snapshot(
         # их в get_orders() (MockBroker хранит все заявки вечно).
         if order.status not in _ACTIVE_ORDER_STATUSES:
             continue
+        order_spec = specs.get(order.instrument.key)
+        notional = order.price * order_spec.lot_size * order.lots if order_spec is not None else None
         orders.append(
             OrderSnapshot(
                 ticker=order.instrument.ticker,
@@ -102,6 +105,7 @@ def build_snapshot(
                 price=str(order.price),
                 lots=order.lots,
                 filled_lots=order.filled_lots,
+                notional=str(notional) if notional is not None else None,
                 status=order.status.value,
                 client_order_id=order.client_order_id,
                 broker_order_id=order.broker_order_id,
