@@ -102,7 +102,23 @@ pytest -q
 Все тесты используют только `MockBroker` — живой API брокера в тестах
 не вызывается.
 
-## 7. Чеклист запуска на paper
+## 7. Деплой на сервер (systemd, изолированно от других проектов)
+
+```bash
+sudo bash deploy/deploy.sh
+```
+
+Скрипт создаёт системного пользователя `tradingrobot` без права входа,
+клонирует репозиторий в `/opt/tradingrobot`, ставит зависимости в venv и
+поднимает `systemd`-сервис `tradingrobot` (см. `deploy/tradingrobot.service`) —
+процесс работает независимо от прочих сайтов/сервисов на хосте, со своими
+логами (`journalctl -u tradingrobot -f`) и каталогом данных
+(`/opt/tradingrobot/data`). Секреты (`TINVEST_TOKEN` и т.п.) кладутся в
+`/etc/tradingrobot.env` (см. `deploy/tradingrobot.env.example`), а не в
+`config.yaml`. Обновление: повторный запуск `deploy.sh` (git reset --hard на
+свежий `main` + перезапуск сервиса).
+
+## 8. Чеклист запуска на paper
 
 1. `pip install -r requirements.txt` (или `pip install -e .`).
 2. Проверить `config/config.yaml`: `trading.mode: paper`, `broker.kind: mock`
@@ -119,7 +135,7 @@ pytest -q
    реализованный боевой адаптер (снять все `NotImplementedError`) и
    убрать mock-заглушки лота/шага цены из `main.py::build_mock_broker`.
 
-## 8. Ограничения и то, чего робот сознательно не делает
+## 9. Ограничения и то, чего робот сознательно не делает
 
 - Не предсказывает цену и не обещает прибыль — только исполняет жёсткие
   правила сетки в `range`-режиме.
