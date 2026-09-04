@@ -172,6 +172,15 @@ class TInvestAdapter:
         # и обратный кэш figi -> Instrument для сборки позиций из портфеля.
         self._instrument_cache: dict[str, Any] = {}
         self._figi_to_instrument: dict[str, Instrument] = {}
+        # SDK не отдаёт наш client_order_id обратно в get_orders() (только в
+        # ответе post_order, в момент выставления) — восстанавливаем его для
+        # уже висящих заявок через broker_order_id, который совпадает с тем
+        # order_id, что мы сами передали при выставлении (см. place_limit_order
+        # и _order_id_for). Тот же per-process-кэш паттерн и то же ограничение,
+        # что у _figi_to_instrument: после рестарта процесса пуст для заявок,
+        # выставленных до рестарта (сама идемпотентность заявок от этого не
+        # страдает — она держится на known_client_order_ids в state.json).
+        self._order_id_to_client_id: dict[str, str] = {}
         # Один воркер: gRPC-вызовы этого адаптера в рамках одного такта и так
         # выполняются последовательно (см. engine/loop.py — синхронный цикл),
         # пул нужен только чтобы дать вызову таймаут через Future.result().
@@ -528,15 +537,20 @@ class TInvestAdapter:
                 continue  # нет figi в ответе SDK или не удалось резолвить
             orders.append(
                 Order(
-                    # SDK не возвращает наш client_order_id в get_orders() (только в
-                    # ответе post_order как order_request_id) — сверка идёт через
-                    # StateStore.known_client_order_ids, а не через этот список.
-                    client_order_id="",
+                    # Восстанавливаем через _order_id_to_client_id (см. __init__) —
+                    # пусто, только если заявка выставлена до рестарта процесса.
+                    client_order_id=self._order_id_to_client_id.get(state.order_id, ""),
                     broker_order_id=state.order_id,
                     instrument=instrument,
                     side=Side.BUY if state.direction == OrderDirection.ORDER_DIRECTION_BUY else Side.SELL,
                     lots=state.lots_requested,
-                    price=money_to_decimal(state.initial_order_price),
+                    # ВАЖНО: initial_order_price — это сумма ВСЕЙ заявки целиком
+                    # (price * lot_size * lots), а НЕ цена за одну бумагу — легко
+                    # перепутать по названию поля. Цена за штуку — отдельное поле
+                    # initial_security_price (проверено живым импортом SDK,
+                    # dataclasses.fields(OrderState)). Спутать их — значит
+                    # показать/использовать цену, завышенную в lot_size*lots раз.
+                    price=money_to_decimal(state.initial_security_price),
                     time_in_force=TimeInForce.DAY,
                     status=_EXEC_STATUS_MAP.get(state.execution_report_status, OrderStatus.ACCEPTED),
                     filled_lots=state.lots_executed,
@@ -577,6 +591,7 @@ class TInvestAdapter:
             order_id=_order_id_for(request.client_order_id),
             time_in_force=_TIF_MAP.get(request.time_in_force, TimeInForceType.TIME_IN_FORCE_DAY),
         )
+        self._order_id_to_client_id[response.order_id] = request.client_order_id
         return OrderAck(
             client_order_id=request.client_order_id,
             broker_order_id=response.order_id,

@@ -75,6 +75,19 @@ def instrument_from_selected(sel: SelectedInstrument) -> Instrument:
     return Instrument(ticker=sel.ticker, board=sel.board, instrument_class=InstrumentClass(sel.instrument_class))
 
 
+def order_dedup_key(order: Order) -> str:
+    """Ключ для сопоставления заявок между тактами.
+
+    client_order_id может быть пустым для заявок, выставленных до последнего
+    рестарта процесса — T-Invest SDK не возвращает наш client_order_id в
+    get_orders(), он восстанавливается только для заявок, размещённых в
+    рамках текущего процесса (см. TInvestAdapter._order_id_to_client_id).
+    Без этого запасного варианта несколько таких "безымянных" заявок
+    схлопнулись бы в один и тот же ключ словаря ("") и терялись бы.
+    """
+    return order.client_order_id or f"broker:{order.broker_order_id}"
+
+
 def risk_limits_from_config(cfg: RootConfig) -> RiskLimits:
     return RiskLimits(
         max_daily_loss_pct=cfg.risk.max_daily_loss_pct,
@@ -243,23 +256,23 @@ class RobotEngine:
         Это эвристика, а не точный факт от брокера, поэтому в reason всегда
         помечена как "вывод по факту" — так же отражается и в панели.
         """
-        current_orders = {o.client_order_id: o for o in account.orders}
+        current_orders = {order_dedup_key(o): o for o in account.orders}
         position_lots = {p.instrument.key: p.lots for p in account.positions}
 
-        for client_order_id, order in current_orders.items():
-            prev = self._last_orders.get(client_order_id)
+        for key, order in current_orders.items():
+            prev = self._last_orders.get(key)
             if prev is not None and prev.status == order.status:
                 continue
             self._journal.record(
                 ticker=order.instrument.ticker, regime="n/a", action="update",
                 reason=f"order status changed to {order.status.value}",
-                account=account, client_order_id=client_order_id,
+                account=account, client_order_id=order.client_order_id,
                 broker_order_id=order.broker_order_id, price=order.price,
                 lots=order.lots, status=order.status.value,
             )
 
-        for client_order_id, prev in self._last_orders.items():
-            if client_order_id in current_orders:
+        for key, prev in self._last_orders.items():
+            if key in current_orders:
                 continue
             prev_lots = self._last_position_lots.get(prev.instrument.key, 0)
             new_lots = position_lots.get(prev.instrument.key, 0)
@@ -273,7 +286,7 @@ class RobotEngine:
                 reason = "order no longer active: inferred cancelled (position unchanged)"
             self._journal.record(
                 ticker=prev.instrument.ticker, regime="n/a", action="update",
-                reason=reason, account=account, client_order_id=client_order_id,
+                reason=reason, account=account, client_order_id=prev.client_order_id,
                 broker_order_id=prev.broker_order_id, price=prev.price, lots=prev.lots,
                 status=inferred_status.value,
             )
