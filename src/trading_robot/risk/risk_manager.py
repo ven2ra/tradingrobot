@@ -15,7 +15,7 @@ from datetime import datetime, time
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from trading_robot.domain.types import AccountState, Instrument, InstrumentClass
+from trading_robot.domain.types import AccountState, Instrument, InstrumentClass, InstrumentSpec
 
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -63,12 +63,26 @@ class DailyPnlTracker:
         self._stopped_out = False
 
 
-def equity_of(account: AccountState, mark_prices: dict[str, Decimal]) -> Decimal:
-    """Equity = деньги + рыночная стоимость позиций по последним ценам mark_prices[instrument.key]."""
+def equity_of(
+    account: AccountState,
+    mark_prices: dict[str, Decimal],
+    specs: dict[str, InstrumentSpec],
+) -> Decimal:
+    """Equity = деньги + рыночная стоимость позиций.
+
+    mark_prices[instrument.key] и pos.average_price — цена ЗА ЕДИНИЦУ
+    инструмента (не за лот). Стоимость позиции = price * lot_size * lots,
+    поэтому specs обязателен для получения lot_size каждого инструмента
+    в portfolio. Инструмент без записи в specs пропускается с его
+    стоимостью = 0 (безопаснее недооценить equity, чем переоценить).
+    """
     total = account.cash
     for pos in account.positions:
+        spec = specs.get(pos.instrument.key)
+        if spec is None:
+            continue
         price = mark_prices.get(pos.instrument.key, pos.average_price)
-        total += price * pos.lots
+        total += price * spec.lot_size * pos.lots
     return total
 
 
@@ -115,18 +129,23 @@ def max_allowed_notional_for_instrument(
     *,
     account: AccountState,
     mark_prices: dict[str, Decimal],
+    specs: dict[str, InstrumentSpec],
     instrument: Instrument,
     limits: RiskLimits,
 ) -> Decimal:
-    """Сколько ещё можно вложить в инструмент, не нарушив cash_reserve и max_instrument_weight."""
-    equity = equity_of(account, mark_prices)
+    """Сколько ещё можно вложить в инструмент, не нарушив cash_reserve и max_instrument_weight.
+
+    mark_prices — цена за единицу инструмента (см. equity_of).
+    """
+    equity = equity_of(account, mark_prices, specs)
     max_by_weight = equity * limits.max_instrument_weight
     current_key = instrument.key
     current_position_value = Decimal("0")
+    current_spec = specs.get(current_key)
     for pos in account.positions:
-        if pos.instrument.key == current_key:
+        if pos.instrument.key == current_key and current_spec is not None:
             price = mark_prices.get(current_key, pos.average_price)
-            current_position_value = price * pos.lots
+            current_position_value = price * current_spec.lot_size * pos.lots
             break
 
     remaining_by_weight = max_by_weight - current_position_value

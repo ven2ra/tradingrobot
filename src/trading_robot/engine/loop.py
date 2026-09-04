@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 from trading_robot.config.loader import RootConfig
 from trading_robot.context.context_filter import CalendarContextFilter, ContextVerdict, combine_verdicts
-from trading_robot.domain.types import Instrument, InstrumentClass, OrderStatus, Side
+from trading_robot.domain.types import Instrument, InstrumentClass, InstrumentSpec, OrderStatus, Side
 from trading_robot.features.features import compute_features
 from trading_robot.interfaces.broker import BrokerAdapter
 from trading_robot.journal.journal import Journal
@@ -130,10 +130,24 @@ class RobotEngine:
         )
         self._reconcile_day(account)
 
+    def _fetch_marks(self) -> tuple[dict[str, Decimal], dict[str, InstrumentSpec]]:
+        """mark_prices — цена за единицу инструмента; specs — для домножения на lot_size."""
+        mark_prices: dict[str, Decimal] = {}
+        specs: dict[str, InstrumentSpec] = {}
+        for instrument in self._instruments:
+            try:
+                quote = self._broker.get_quote(instrument)
+                specs[instrument.key] = self._broker.get_instrument_spec(instrument)
+                mark_prices[instrument.key] = (quote.bid + quote.ask) / Decimal("2")
+            except Exception:
+                logger.warning("failed to fetch quote/spec for %s", instrument.key)
+        return mark_prices, specs
+
     def _reconcile_day(self, account) -> None:
         today = datetime.now(MSK).date().isoformat()
         if self._state.trading_day != today:
-            equity = equity_of(account, mark_prices={})
+            mark_prices, specs = self._fetch_marks()
+            equity = equity_of(account, mark_prices, specs)
             self._state.trading_day = today
             self._state.day_start_equity = str(equity)
             self._state.daily_stopped_out = False
@@ -155,15 +169,8 @@ class RobotEngine:
         now = datetime.now(MSK)
         account = self._broker.sync_state()
 
-        mark_prices: dict[str, Decimal] = {}
-        for instrument in self._instruments:
-            try:
-                quote = self._broker.get_quote(instrument)
-                mark_prices[instrument.key] = (quote.bid + quote.ask) / Decimal("2")
-            except Exception:
-                logger.warning("failed to fetch quote for %s", instrument.key)
-
-        equity = equity_of(account, mark_prices)
+        mark_prices, specs = self._fetch_marks()
+        equity = equity_of(account, mark_prices, specs)
         assert self._daily_tracker is not None
         stopped_out = self._daily_tracker.update(equity, self._risk_limits.max_daily_loss_pct)
         if stopped_out and not self._state.daily_stopped_out:
@@ -182,9 +189,9 @@ class RobotEngine:
         )
 
         for instrument in self._instruments:
-            self._process_instrument(instrument, account, mark_prices, risk_decision, now)
+            self._process_instrument(instrument, account, mark_prices, specs, risk_decision, now)
 
-    def _process_instrument(self, instrument, account, mark_prices, risk_decision, now: datetime) -> None:
+    def _process_instrument(self, instrument, account, mark_prices, specs, risk_decision, now: datetime) -> None:
         ticker = instrument.ticker
 
         if not risk_decision.entries_allowed:
@@ -274,7 +281,7 @@ class RobotEngine:
             return
 
         allowed_notional = max_allowed_notional_for_instrument(
-            account=account, mark_prices=mark_prices, instrument=instrument, limits=self._risk_limits,
+            account=account, mark_prices=mark_prices, specs=specs, instrument=instrument, limits=self._risk_limits,
         )
         per_level_notional = allowed_notional * self._grid_config.level_notional_fraction * context_verdict.size_multiplier
 
