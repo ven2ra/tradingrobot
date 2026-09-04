@@ -88,6 +88,27 @@ class TradingConfig(BaseModel):
     mode: Literal["paper", "live"] = "paper"
 
 
+class NewsSourceConfig(BaseModel):
+    name: str
+    url: str
+
+
+class NewsConfig(BaseModel):
+    enabled: bool = True
+    poll_interval_seconds: int = 60  # DEFAULT — «быстро», но не долбить источники чаще раза в минуту
+    news_path: str = "./data/news.json"
+    # DEFAULT-источники: официальные бесплатные RSS без ключей, проверены на
+    # момент составления (см. newsfeed/poller.py). e-disclosure.ru/MOEX
+    # добавьте сами, если найдёте у них рабочий RSS-адрес — их сайты не
+    # отдавали публичный RSS ботам на момент проверки.
+    sources: list[NewsSourceConfig] = Field(
+        default_factory=lambda: [
+            NewsSourceConfig(name="Интерфакс", url="https://www.interfax.ru/rss"),
+            NewsSourceConfig(name="РБК", url="https://rssexport.rbc.ru/rbcnews/news/30/full.rss"),
+        ]
+    )
+
+
 class RootConfig(BaseModel):
     trading: TradingConfig = TradingConfig()
     broker: BrokerConfig = BrokerConfig()
@@ -99,6 +120,7 @@ class RootConfig(BaseModel):
     session: SessionConfig = SessionConfig()
     journal: JournalConfig = JournalConfig()
     llm: LlmConfig = LlmConfig()
+    news: NewsConfig = NewsConfig()
     state_store_path: str = "./data/state.json"
     account_snapshot_path: str = "./data/account.json"
     selected_instruments_path: str = "./data/selected_instruments.json"

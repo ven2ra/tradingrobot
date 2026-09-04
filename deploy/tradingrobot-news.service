@@ -1,0 +1,23 @@
+[Unit]
+Description=MOEX trading robot - news feed poller (RSS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tradingrobot
+Group=tradingrobot
+WorkingDirectory=/opt/tradingrobot
+EnvironmentFile=-/etc/tradingrobot.env
+ExecStart=/opt/tradingrobot/.venv/bin/python -m trading_robot.newsfeed.poller --config /opt/tradingrobot/config/config.yaml
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/tradingrobot/data
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

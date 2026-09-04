@@ -12,6 +12,7 @@ REPO_URL="https://github.com/ven2ra/tradingrobot"
 APP_DIR="/opt/tradingrobot"
 SERVICE_NAME="tradingrobot"
 WEB_SERVICE_NAME="tradingrobot-web"
+NEWS_SERVICE_NAME="tradingrobot-news"
 SERVICE_USER="tradingrobot"
 PYTHON_BIN="python3.11"
 ENV_FILE="/etc/tradingrobot.env"
@@ -76,9 +77,10 @@ fi
 echo "== 7/7: systemd units =="
 install -m 0644 "$APP_DIR/deploy/tradingrobot.service" /etc/systemd/system/"$SERVICE_NAME".service
 install -m 0644 "$APP_DIR/deploy/tradingrobot-web.service" /etc/systemd/system/"$WEB_SERVICE_NAME".service
+install -m 0644 "$APP_DIR/deploy/tradingrobot-news.service" /etc/systemd/system/"$NEWS_SERVICE_NAME".service
 systemctl daemon-reload
-systemctl enable "$SERVICE_NAME" "$WEB_SERVICE_NAME"
-systemctl restart "$SERVICE_NAME" "$WEB_SERVICE_NAME"
+systemctl enable "$SERVICE_NAME" "$WEB_SERVICE_NAME" "$NEWS_SERVICE_NAME"
+systemctl restart "$SERVICE_NAME" "$WEB_SERVICE_NAME" "$NEWS_SERVICE_NAME"
 
 SERVER_IP="$(curl -fsSL -4 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')"
 
@@ -86,9 +88,11 @@ echo
 echo "Готово. Статус:"
 systemctl --no-pager status "$SERVICE_NAME" || true
 systemctl --no-pager status "$WEB_SERVICE_NAME" || true
+systemctl --no-pager status "$NEWS_SERVICE_NAME" || true
 echo
 echo "Логи движка:   journalctl -u $SERVICE_NAME -f"
 echo "Логи монитора: journalctl -u $WEB_SERVICE_NAME -f"
+echo "Логи новостей: journalctl -u $NEWS_SERVICE_NAME -f"
 echo "Журнал:        $APP_DIR/data/journal.jsonl / journal.log"
 echo "Конфиг:        $APP_DIR/config/config.yaml (после правки: systemctl restart $SERVICE_NAME)"
 echo "Секреты:       $ENV_FILE ($GENERATED_NOTICE)"

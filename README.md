@@ -187,6 +187,21 @@ python -m trading_robot.webui.server --config config/config.yaml --host 127.0.0.
 `http://<IP_сервера>:8765/` и введите логин/пароль из `/etc/tradingrobot.env`
 (и убедитесь, что порт 8765 открыт в файрволе/security group).
 
+## 8а. Новостная лента
+
+`src/trading_robot/newsfeed/poller.py` — ещё один отдельный процесс: раз в
+`news.poll_interval_seconds` (DEFAULT 60с) опрашивает публичные RSS
+(DEFAULT — Интерфакс `https://www.interfax.ru/rss`, РБК
+`https://rssexport.rbc.ru/rbcnews/news/30/full.rss`, оба проверены вживую)
+и пишет `data/news.json`, который читает и показывает веб-панель (блок
+«Новости»). Список источников — `news.sources` в `config.yaml`, можно
+добавить любой другой RSS/Atom (например e-disclosure.ru/MOEX, если
+найдёте у них рабочий RSS-адрес — на момент написания их сайты не отдавали
+публичный RSS без браузерных заголовков). Лента — витрина для человека:
+робот эти новости не читает и решения по ним не принимает, это отдельный
+контур от `ContextFilter`. Запуск: `python -m trading_robot.newsfeed.poller
+--config config/config.yaml`; на сервере — сервис `tradingrobot-news`.
+
 ## 9. Чеклист запуска на paper
 
 1. `pip install -r requirements.txt` (или `pip install -e .`).

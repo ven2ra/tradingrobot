@@ -119,6 +119,14 @@ INDEX_HTML = """<!doctype html>
   .btn-primary:hover { background: #3a8a5c; }
   .status-ok-text { color: #5ecb7d; }
   .status-err-text { color: #ff6b6b; }
+
+  .news-list { max-height: 320px; overflow-y: auto; }
+  .news-item { padding: 8px 0; border-bottom: 1px solid #2a2e33; font-size: 13px; }
+  .news-item:last-child { border-bottom: none; }
+  .news-item a { color: #e6e6e6; text-decoration: none; }
+  .news-item a:hover { color: #6ea8fe; text-decoration: underline; }
+  .news-meta { color: #6a6f76; font-size: 11px; margin-top: 2px; }
+  .news-source { display: inline-block; padding: 1px 7px; border-radius: 999px; background: #2a2e33; color: #9aa0a6; margin-right: 6px; }
 </style>
 </head>
 <body>
@@ -180,6 +188,11 @@ INDEX_HTML = """<!doctype html>
       <button id="save-instruments-btn" class="btn btn-primary">Сохранить список</button>
       <span id="instruments-status" class="muted" style="font-size:12px"></span>
     </div>
+  </div>
+
+  <div class="panel" id="news-panel">
+    <h2>Новости <span class="hint" title="Заголовки из публичных RSS (Интерфакс, РБК — настраивается в config.yaml). Это витрина для человека, робот эти новости НЕ читает и решения по ним не принимает — это отдельный контур от ContextFilter.">?</span></h2>
+    <div id="news-list" class="news-list"><div class="muted">Загрузка...</div></div>
   </div>
 
   <div class="wrap">
@@ -450,6 +463,35 @@ document.getElementById('save-instruments-btn').addEventListener('click', async 
 loadInstrumentsPanel();
 setInterval(loadInstrumentsPanel, 15000);
 
+// -- новости ---------------------------------------------------------------
+async function refreshNews() {
+  const el = document.getElementById('news-list');
+  try {
+    const res = await fetch('/api/news', { cache: 'no-store' });
+    const data = await res.json();
+    const items = data.items || [];
+    if (!items.length) {
+      el.innerHTML = '<div class="muted">Пока нет новостей — либо лента ещё не опрашивалась, либо news.enabled: false в конфиге.</div>';
+      return;
+    }
+    el.innerHTML = items.slice(0, 40).map(n => {
+      let when = '';
+      if (n.published) {
+        try { when = new Date(n.published).toLocaleString('ru-RU'); } catch (e) { when = n.published; }
+      }
+      return `
+      <div class="news-item">
+        <a href="${n.link}" target="_blank" rel="noopener noreferrer">${n.title}</a>
+        <div class="news-meta"><span class="news-source">${n.source}</span>${when}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="muted">Не удалось загрузить новости: ' + e + '</div>';
+  }
+}
+refreshNews();
+setInterval(refreshNews, 30000);
+
 refresh();
 setInterval(refresh, 3000);
 </script>
@@ -492,6 +534,7 @@ def make_handler(cfg: RootConfig, auth_header: str | None):
     state_path = Path(cfg.state_store_path)
     account_path = Path(cfg.account_snapshot_path)
     instrument_selection = InstrumentSelectionStore(Path(cfg.selected_instruments_path))
+    news_path = Path(cfg.news.news_path)
     config_tickers = [ic.ticker for ic in cfg.instruments]
 
     class Handler(BaseHTTPRequestHandler):
@@ -544,6 +587,10 @@ def make_handler(cfg: RootConfig, auth_header: str | None):
                 tickers = [s.ticker for s in selected] if selected is not None else config_tickers
                 source = "panel" if selected is not None else "config"
                 self._send_json(200, {"selected": tickers, "source": source})
+                return
+
+            if self.path.startswith("/api/news"):
+                self._send_json(200, _read_state(news_path))
                 return
 
             self.send_response(404)
