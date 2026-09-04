@@ -312,12 +312,24 @@ class TInvestAdapter:
             id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi,
         )
         raw = resp.instrument
-        instrument_class = {
+        type_map = {
             "share": InstrumentClass.SHARE,
             "bond": InstrumentClass.BOND,
             "future": InstrumentClass.FUTURE,
-        }.get(raw.instrument_type, InstrumentClass.SHARE)
-        instrument = Instrument(ticker=raw.ticker, board=raw.class_code, instrument_class=instrument_class)
+        }
+        if raw.instrument_type not in type_map:
+            # T-Invest возвращает в portfolio.positions/get_orders НЕ только
+            # реальные бумаги, но и служебные записи — например валютный
+            # остаток (рубли) как псевдо-инструмент с тикером вида
+            # "RUB000UTSTOM", instrument_type="currency". Это те же деньги,
+            # что уже учтены в account.cash — трактовать как акцию/облигацию
+            # по умолчанию (было раньше) НЕЛЬЗЯ: котировок для него нет,
+            # mark_price уходит в 0, и P&L искажается на всю сумму остатка.
+            raise TInvestConfigError(
+                f"figi={figi}: instrument_type={raw.instrument_type!r} не поддерживается "
+                "(не share/bond/future — вероятно валютная или иная служебная запись)"
+            )
+        instrument = Instrument(ticker=raw.ticker, board=raw.class_code, instrument_class=type_map[raw.instrument_type])
         self._instrument_cache[instrument.key] = raw
         self._figi_to_instrument[figi] = instrument
         return instrument
@@ -434,6 +446,12 @@ class TInvestAdapter:
                 # Резолвим по figi напрямую через API, а не пропускаем.
                 try:
                     instrument = self._resolve_by_figi(pos.figi)
+                except TInvestConfigError:
+                    # Штатный случай — валютный остаток или другая служебная
+                    # запись в portfolio.positions (см. _resolve_by_figi),
+                    # не наша "торгуемая позиция". Тихо пропускаем, без warning
+                    # (иначе он будет валить лог на каждом такте).
+                    continue
                 except Exception:
                     logger.warning(
                         "не удалось резолвить figi=%s для открытой позиции — "
@@ -464,6 +482,8 @@ class TInvestAdapter:
             if instrument is None and state_figi:
                 try:
                     instrument = self._resolve_by_figi(state_figi)
+                except TInvestConfigError:
+                    pass  # см. комментарий в get_account() про валютные записи
                 except Exception:
                     logger.warning("не удалось резолвить figi=%s для открытой заявки, пропускаю", state_figi)
             if instrument is None:
