@@ -48,11 +48,21 @@ INDEX_HTML = """<!doctype html>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 24px;
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 0 24px 24px;
          background: #0b0d10; color: #e6e6e6; line-height: 1.45; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -.01em; }
   h2 { font-size: 15px; margin: 0 0 10px; }
   .sub { color: #9aa0a6; font-size: 13px; margin-bottom: 18px; }
+
+  .topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between;
+            gap: 16px; flex-wrap: wrap; padding: 18px 0 14px; margin: 0 -24px 18px; padding-left: 24px; padding-right: 24px;
+            background: linear-gradient(#0b0d10 82%, transparent); border-bottom: 1px solid #1c1f24; }
+  .topbar .brand { display: flex; align-items: center; gap: 10px; }
+  .topbar .brand .dot-live { width: 8px; height: 8px; border-radius: 50%; background: #5ecb7d;
+            box-shadow: 0 0 0 3px rgba(94,203,125,.18); flex: none; }
+  .topbar .brand .dot-live.bad { background: #ff6b6b; box-shadow: 0 0 0 3px rgba(255,107,107,.18); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #9aa0a6;
+          background: #16191d; border: 1px solid #2a2e33; border-radius: 999px; padding: 5px 12px; }
 
   .hint { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
           border-radius: 50%; background: #2a2e33; color: #9aa0a6; font-size: 10px; font-weight: 700;
@@ -73,9 +83,12 @@ INDEX_HTML = """<!doctype html>
   .legend span.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
 
   .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
-  .card { background: #16191d; border: 1px solid #2a2e33; border-radius: 8px; padding: 12px 16px; min-width: 180px; }
+  .card { background: #16191d; border: 1px solid #2a2e33; border-left: 3px solid #2a2e33; border-radius: 8px;
+          padding: 12px 16px; min-width: 180px; transition: border-color .15s; }
+  .card.card-ok { border-left-color: #5ecb7d; }
+  .card.card-stopped { border-left-color: #ff6b6b; }
   .card .label { font-size: 11px; color: #9aa0a6; text-transform: uppercase; letter-spacing: .04em; }
-  .card .value { font-size: 20px; margin-top: 4px; }
+  .card .value { font-size: 20px; margin-top: 4px; font-variant-numeric: tabular-nums; }
   .card .note { font-size: 11px; color: #6a6f76; margin-top: 3px; }
   .stopped { color: #ff6b6b; }
   .ok { color: #5ecb7d; }
@@ -134,7 +147,13 @@ INDEX_HTML = """<!doctype html>
 </style>
 </head>
 <body>
-  <h1>Монитор торгового робота</h1>
+  <div class="topbar">
+    <div class="brand">
+      <span class="dot-live" id="live-dot"></span>
+      <h1>Монитор торгового робота</h1>
+    </div>
+    <span class="pill" id="live-pill">Подключение…</span>
+  </div>
   <div class="sub">
     Эта страница ничего не покупает и не продаёт — она только показывает, что уже сделал
     (или не сделал) робот, и почему. Все сделки видны здесь с задержкой не больше нескольких секунд.
@@ -164,7 +183,7 @@ INDEX_HTML = """<!doctype html>
   <div class="cards" id="cards"></div>
 
   <div class="panel" id="positions-panel">
-    <h2>Позиции и P&amp;L <span class="hint" title="P&amp;L (profit and loss) — прибыль или убыток. Здесь показан НЕреализованный P&amp;L: сколько бы вы заработали/потеряли, если бы закрыли позицию прямо сейчас по текущей цене. Пока позиция открыта, это число меняется вместе с ценой.">?</span></h2>
+    <h2>📊 Позиции и P&amp;L <span class="hint" title="P&amp;L (profit and loss) — прибыль или убыток. Здесь показан НЕреализованный P&amp;L: сколько бы вы заработали/потеряли, если бы закрыли позицию прямо сейчас по текущей цене. Пока позиция открыта, это число меняется вместе с ценой.">?</span></h2>
     <div class="wrap" style="max-height:none">
       <table>
         <thead><tr>
@@ -178,11 +197,12 @@ INDEX_HTML = """<!doctype html>
   </div>
 
   <div class="panel" id="orders-panel">
-    <h2>Открытые заявки <span class="hint" title="ТЕКУЩЕЕ состояние — заявки, которые прямо сейчас висят на бирже неисполненными (статус Новая/Принята/Частично исполнена). Это не история: как только заявка исполнится или будет снята, она пропадёт из этого списка (её судьбу смотрите в журнале ниже, действие «Статус заявки изменился»).">?</span></h2>
+    <h2>📋 Открытые заявки <span class="hint" title="ТЕКУЩЕЕ состояние — заявки, которые прямо сейчас висят на бирже неисполненными (статус Новая/Принята/Частично исполнена). Это не история: как только заявка исполнится или будет снята, она пропадёт из этого списка (её судьбу смотрите в журнале ниже, действие «Статус заявки изменился»).">?</span></h2>
     <div class="wrap" style="max-height:none">
       <table>
         <thead><tr>
           <th>Тикер</th><th>Сторона</th>
+          <th>Зачем эта заявка<span class="hint" title="Почему робот выставил именно эту заявку — своими словами, то же объяснение, что и в журнале решений ниже, только сразу рядом с самой заявкой.">?</span></th>
           <th>Цена<span class="hint" title="Цена ОДНОЙ БУМАГИ (не лота и не всей заявки) — так задаётся любая лимитная заявка на бирже.">?</span></th>
           <th>Лоты</th>
           <th>Исполнено<span class="hint" title="Сколько лотов из заявки уже исполнено частично (0, если исполнения ещё не было).">?</span></th>
@@ -195,7 +215,7 @@ INDEX_HTML = """<!doctype html>
   </div>
 
   <div class="panel" id="instruments-panel">
-    <h2>Какие акции отслеживать
+    <h2>🎯 Какие акции отслеживать
       <span class="hint" title="Изменения применяются на следующем такте робота (обычно в течение нескольких секунд) — перезапуск не нужен. Список ограничен 30 тикерами за раз: каждый тикер — минимум пара сетевых запросов к брокеру за такт.">?</span>
     </h2>
     <div class="sub" style="margin-bottom:12px">
@@ -212,10 +232,11 @@ INDEX_HTML = """<!doctype html>
   </div>
 
   <div class="panel" id="news-panel">
-    <h2>Новости <span class="hint" title="Заголовки из публичных RSS (Интерфакс, РБК — настраивается в config.yaml). Это витрина для человека, робот эти новости НЕ читает и решения по ним не принимает — это отдельный контур от ContextFilter.">?</span></h2>
+    <h2>📰 Новости <span class="hint" title="Заголовки из публичных RSS (Интерфакс, РБК — настраивается в config.yaml). Это витрина для человека, робот эти новости НЕ читает и решения по ним не принимает — это отдельный контур от ContextFilter.">?</span></h2>
     <div id="news-list" class="news-list"><div class="muted">Загрузка...</div></div>
   </div>
 
+  <h2>🧾 Журнал решений робота <span class="hint" title="Полная, неизменяемая история: каждое решение робота на каждом такте, включая те, где он ничего не сделал (skip) — так видно не только что произошло, но и что робот СОЗНАТЕЛЬНО пропустил и почему.">?</span></h2>
   <div class="wrap">
     <table>
       <thead><tr>
@@ -342,6 +363,11 @@ function badge(cls, text) {
   return `<span class="badge badge-${cls}">${text}</span>`;
 }
 
+function setLive(ok, text) {
+  document.getElementById('live-dot').classList.toggle('bad', !ok);
+  document.getElementById('live-pill').textContent = text;
+}
+
 async function refresh() {
   let data;
   try {
@@ -349,6 +375,7 @@ async function refresh() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     data = await res.json();
   } catch (e) {
+    setLive(false, 'Нет связи с панелью: ' + e);
     document.getElementById('stale').textContent = 'Нет связи с панелью: ' + e;
     return;
   }
@@ -356,6 +383,13 @@ async function refresh() {
 
   const st = data.state || {};
   const acc = data.account || {};
+  if (acc.timestamp) {
+    const ageSec = Math.max(0, Math.round((Date.now() - new Date(acc.timestamp).getTime()) / 1000));
+    const ageText = ageSec < 60 ? `${ageSec}с назад` : `${Math.round(ageSec / 60)}мин назад`;
+    setLive(ageSec < 30, `Такт робота: обновлено ${ageText}`);
+  } else {
+    setLive(true, 'На связи');
+  }
   const positions = acc.positions || [];
   const totalPnl = positions.reduce((sum, p) => sum + parseFloat(p.unrealized_pnl || '0'), 0);
   const dayStart = parseFloat(st.day_start_equity || '0');
@@ -401,6 +435,30 @@ async function refresh() {
   }).join('');
   document.getElementById('positions-rows').innerHTML = posRows || '<tr><td colspan="6">Открытых позиций нет</td></tr>';
 
+  // Смысл заявки — сама заявка (account.json) не хранит "зачем", это знает
+  // только журнал решений (тот же самый reason, что и в enter-записи, когда
+  // заявка выставлялась) — сопоставляем по client_order_id. data.recent идёт
+  // от старых записей к новым, поэтому при перезаписи в map остаётся ПОСЛЕДНЯЯ
+  // (самая свежая) причина по этому id.
+  const orderReasonByClientId = {};
+  for (const e of (data.recent || [])) {
+    if (e.action === 'enter' && e.client_order_id) {
+      orderReasonByClientId[e.client_order_id] = translateReason(e.reason);
+    }
+  }
+  function explainOrder(o) {
+    if (o.client_order_id && orderReasonByClientId[o.client_order_id]) {
+      return orderReasonByClientId[o.client_order_id];
+    }
+    if (o.client_order_id && o.client_order_id.startsWith('GRID-')) {
+      return 'Заявка сетки (флэт-стратегия) — точная причина выпала из видимых 200 последних записей журнала, но по виду ID это уровень сетки.';
+    }
+    if (o.client_order_id && o.client_order_id.startsWith('TREND-')) {
+      return 'Заявка трендовой (momentum) стратегии — точная причина выпала из видимых 200 последних записей журнала, но по виду ID это вход или выход по тренду.';
+    }
+    return 'Причина не найдена — заявка выставлена до последнего перезапуска панели/робота или раньше видимой истории журнала.';
+  }
+
   const orders = acc.orders || [];
   const orderRows = orders.map(o => {
     const tickerTitle = TICKER_RU[o.ticker] ? ` title="${TICKER_RU[o.ticker]}"` : '';
@@ -411,6 +469,7 @@ async function refresh() {
     <tr>
       <td${tickerTitle}>${o.ticker}</td>
       <td>${SIDE_RU[o.side] || o.side}</td>
+      <td class="reason">${explainOrder(o)}</td>
       <td>${o.price}</td>
       <td>${o.lots}</td>
       <td>${o.filled_lots}</td>
@@ -419,7 +478,7 @@ async function refresh() {
       <td class="muted">${o.client_order_id ?? '—'}</td>
     </tr>`;
   }).join('');
-  document.getElementById('orders-rows').innerHTML = orderRows || '<tr><td colspan="8">Открытых заявок нет</td></tr>';
+  document.getElementById('orders-rows').innerHTML = orderRows || '<tr><td colspan="9">Открытых заявок нет</td></tr>';
 
   const rows = (data.recent || []).slice().reverse().map(e => {
     const regimeCls = (e.regime && e.regime !== 'n/a') ? e.regime : 'na';
