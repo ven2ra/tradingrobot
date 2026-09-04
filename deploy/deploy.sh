@@ -55,7 +55,10 @@ echo "== 6/7: учётные данные веб-монитора =="
 # брокера/LLM).
 GENERATED_NOTICE=""
 if [ ! -f "$ENV_FILE" ]; then
-  WEBUI_PASSWORD_GENERATED="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)"
+  # python3 вместо `tr | head -c`: с `set -o pipefail` то, что head закрывает
+  # трубу раньше tr, читается как SIGPIPE-провал всего пайплайна и молча
+  # обрывает скрипт (никакого сообщения об ошибке, просто выход).
+  WEBUI_PASSWORD_GENERATED="$("$PYTHON_BIN" -c 'import secrets; print(secrets.token_urlsafe(15))')"
   cat > "$ENV_FILE" <<EOF
 # Секреты робота. НЕ коммитить, НЕ логировать. chmod 600, владелец root.
 WEBUI_USER=admin
