@@ -1,0 +1,64 @@
+# Конфигурация MOEX-робота. Секреты — ТОЛЬКО имена переменных окружения.
+# Значения, помеченные "# DEFAULT", взяты по умолчанию из ТЗ, т.к. не были
+# заданы явно — при необходимости переопределите под конкретный счёт.
+
+trading:
+  mode: paper  # paper | live. live включается ТОЛЬКО явным изменением этого поля.
+
+broker:
+  kind: mock  # mock | tinvest | alor | finam | bcs. BROKER не был задан -> DEFAULT: mock (+ каркас tinvest готов).
+  token_env: TINVEST_TOKEN        # имя переменной окружения с токеном, НЕ сам токен
+  account_id_env: TINVEST_ACCOUNT_ID
+  sandbox: true
+
+instruments:  # DEFAULT: тикеры не были заданы -> пример на TQBR, замените под задачу
+  - ticker: SBER
+    board: TQBR      # DEFAULT секция: TQBR (акции). Для FORTS указывать board: FORTS + expiration
+    instrument_class: share
+  - ticker: GAZP
+    board: TQBR
+    instrument_class: share
+
+features:
+  short_window: 5          # баров для короткой волатильности/short_return
+  mid_window: 20            # баров для mid_return/position_in_range/volume_vs_avg
+  stale_threshold_ms: 5000  # данные старше этого возраста считаются оборванным каналом
+
+regime:
+  shock_volatility: "0.02"            # std лог-доходностей, выше -> shock
+  low_liquidity_spread_bps: "50"      # спред в bps, выше -> low_liquidity
+  low_liquidity_volume_ratio: "0.3"   # volume_vs_avg ниже -> low_liquidity
+  trend_return_threshold: "0.01"      # |mid_return| выше -> uptrend/downtrend
+  max_age_ms_for_classification: 5000
+
+strategy:
+  max_levels: 3                     # максимум уровней сетки на инструмент
+  max_inventory_lots: 10            # максимум инвентаря (лотов) от сетки
+  step_volatility_multiplier: "3"   # шаг сетки = f(volatility, price_step)
+  min_step_price_steps: 2           # минимальный шаг сетки, в шагах цены
+  level_notional_fraction: "0.1"    # доля разрешённого капитала на один уровень сетки
+
+risk:
+  max_daily_loss_pct: "0.01"      # DEFAULT 1%
+  max_instrument_weight: "0.20"   # DEFAULT 20%
+  cash_reserve: "10000"           # DEFAULT — неснижаемый остаток, в валюте счёта
+  max_instruments: 3              # DEFAULT
+  entry_start: "10:05:00"         # DEFAULT 10:05 MSK
+  entry_cutoff_min: 15            # DEFAULT — запрет входов за N минут до закрытия сессии
+  emergency_market_flatten: false # рыночные заявки допустимы ТОЛЬКО если true и только для аварийного закрытия
+
+session:
+  open_time: "10:00:00"   # основная сессия MOEX; сверить с актуальным календарём торгов MOEX
+  close_time: "18:45:00"  # сверить с актуальным календарём торгов MOEX
+
+journal:
+  jsonl_path: "./data/journal.jsonl"
+  human_log_path: "./data/journal.log"
+
+llm:
+  enabled: false               # LLM-модуль ContextFilter отключён по умолчанию
+  fail_closed: true            # при недоступности LLM -> trade_allowed=false (консервативно)
+  api_key_env: LLM_API_KEY     # имя переменной окружения с ключом провайдера, НЕ сам ключ
+
+state_store_path: "./data/state.json"
+tick_interval_seconds: 5.0
