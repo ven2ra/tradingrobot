@@ -50,6 +50,7 @@ gRPC с настоящим счётом (нужен токен и сетевой
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -84,11 +85,13 @@ try:
         TimeInForceType,
     )
     from t_tech.invest.constants import INVEST_GRPC_API, INVEST_GRPC_API_SANDBOX
-    from t_tech.invest.utils import decimal_to_quotation, money_to_decimal, quotation_to_decimal
+    from t_tech.invest.utils import decimal_to_money, decimal_to_quotation, money_to_decimal, quotation_to_decimal
 
     _TINKOFF_IMPORT_ERROR: Exception | None = None
 except ImportError as exc:  # пакет t-tech-investments не установлен
     _TINKOFF_IMPORT_ERROR = exc
+
+logger = logging.getLogger("trading_robot.brokers.tinvest_adapter")
 
 
 class TInvestConfigError(Exception):
@@ -200,10 +203,7 @@ class TInvestAdapter:
     def _resolve_account_id(self) -> str:
         # Sandbox и боевой контур адресуют счета РАЗНЫМИ методами:
         # SandboxService.get_sandbox_accounts() в песочнице,
-        # UsersService.get_accounts() на боевом контуре. Если счетов в
-        # песочнице ещё нет — их можно создать заранее в личном кабинете
-        # или через SandboxService.open_sandbox_account (не делаем это
-        # автоматически, чтобы не плодить тестовые счета молча).
+        # UsersService.get_accounts() на боевом контуре.
         if self._sandbox:
             accounts = self._call(self._services.sandbox.get_sandbox_accounts).accounts
         else:
@@ -217,13 +217,36 @@ class TInvestAdapter:
             raise TInvestConfigError(
                 f"счёт {configured} (из {self._account_id_env}) не найден среди счетов пользователя"
             )
+
         if not accounts:
-            where = "в sandbox" if self._sandbox else "у пользователя"
+            if self._sandbox:
+                # Sandbox — изолированная песочница без реальных денег: в
+                # отличие от боевого контура здесь безопасно создать счёт
+                # автоматически, если пользователь явно не указал
+                # TINVEST_ACCOUNT_ID. Заводим виртуальный баланс сразу,
+                # иначе счёт будет с нулевым капиталом и робот не сможет
+                # выставить ни одной заявки (cash_reserve заблокирует вход).
+                return self._create_sandbox_account()
             raise TInvestConfigError(
-                f"нет ни одного счёта {where} — для sandbox создайте его в личном кабинете "
-                "или через SandboxService.open_sandbox_account"
+                "нет ни одного счёта у пользователя — откройте счёт в приложении/личном кабинете T-Инвестиций"
             )
         return accounts[0].id
+
+    def _create_sandbox_account(self) -> str:
+        response = self._call(self._services.sandbox.open_sandbox_account, name="trading-robot")
+        account_id = response.account_id
+        top_up = Decimal(os.environ.get("TINVEST_SANDBOX_INITIAL_CASH", "1000000"))
+        self._call(
+            self._services.sandbox.sandbox_pay_in,
+            account_id=account_id,
+            amount=decimal_to_money(top_up, "rub"),
+        )
+        logger.info(
+            "sandbox: создан новый счёт %s и зачислено %s RUB виртуальных денег "
+            "(переопределяется переменной окружения TINVEST_SANDBOX_INITIAL_CASH)",
+            account_id, top_up,
+        )
+        return account_id
 
     # -- instrument resolution ------------------------------------------------
     def _resolve_instrument(self, instrument: Instrument):
