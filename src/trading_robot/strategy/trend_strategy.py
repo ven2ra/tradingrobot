@@ -1,14 +1,21 @@
-"""Strategy: пробойный вход по тренду + фиксированный % стоп-лосс/тейк-профит.
+"""Strategy: momentum-вход по тренду (пробой + подтверждение объёмом) +
+фиксированный % стоп-лосс/тейк-профит.
 
 Правила:
   * Работает ТОЛЬКО когда classify_regime() вернул UPTREND/DOWNTREND — для
     range есть отдельная сетка (grid_strategy.py); режимы не пересекаются,
     поэтому эти две стратегии никогда не конкурируют за один и тот же такт.
-  * Вход — "пробой": агрессивная (маркетируемая) лимитка, пересекающая
-    спред на aggressive_offset_bps, чтобы исполниться сразу, а не ждать в
-    стакане (в отличие от сетки, которая специально ставит пассивные
-    уровни). Без усреднения: пока по инструменту уже есть НЕНУЛЕВАЯ
-    позиция, новых входов не открываем.
+  * Вход — "пробой" (аналог классического momentum-входа), но НЕ по
+    одному лишь факту тренда: обязательно требуется ПОДТВЕРЖДЕНИЕ ОБЪЁМОМ
+    (volume_vs_avg >= min_volume_ratio, т.е. текущий объём заметно выше
+    среднего за окно). Без этого тренд регулярно ловит ложные пробои —
+    движение цены без роста интереса участников гораздо чаще откатывает
+    назад, чем движение, подтверждённое объёмом. Технически вход —
+    агрессивная (маркетируемая) лимитка, пересекающая спред на
+    aggressive_offset_bps, чтобы исполниться сразу, а не ждать в стакане
+    (в отличие от сетки, которая специально ставит пассивные уровни). Без
+    усреднения: пока по инструменту уже есть НЕНУЛЕВАЯ позиция, новых
+    входов не открываем.
   * Выход — фиксированный % от цены входа (position.average_price), не
     ATR/волатильность — простые, предсказуемые пороги. Это software-стоп
     (mental stop): BrokerAdapter поддерживает только лимитки (см.
@@ -37,6 +44,10 @@ class TrendConfig:
     aggressive_offset_bps: Decimal
     stop_loss_pct: Decimal
     take_profit_pct: Decimal
+    # Подтверждение объёмом: текущий объём / средний объём окна должен быть
+    # не ниже этого порога, иначе вход по тренду не открывается (см. докстринг
+    # модуля). 1.0 = объём как обычно, эффективно отключает подтверждение.
+    min_volume_ratio: Decimal = Decimal("1.3")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +74,7 @@ def build_trend_entry(
     instrument: Instrument,
     regime: Regime,
     mid_price: Decimal,
+    volume_vs_avg: Decimal,
     current_inventory_lots: int,
     config: TrendConfig,
     tick_bucket: str,
@@ -72,6 +84,11 @@ def build_trend_entry(
         return None, f"trend entry skipped: regime={regime.value} is not uptrend/downtrend"
     if current_inventory_lots != 0:
         return None, f"trend entry skipped: already have a position ({current_inventory_lots} lots), no averaging"
+    if volume_vs_avg < config.min_volume_ratio:
+        return None, (
+            f"trend entry skipped: volume not confirmed "
+            f"(volume_vs_avg={volume_vs_avg} < min_volume_ratio={config.min_volume_ratio})"
+        )
     side = Side.BUY if regime == Regime.UPTREND else Side.SELL
     price = _aggressive_price(mid_price, side, config.aggressive_offset_bps)
     level = TrendLevel(
@@ -80,7 +97,10 @@ def build_trend_entry(
         client_order_id=_stable_client_order_id(instrument, f"entry-{side.value}", tick_bucket),
         purpose="entry",
     )
-    return level, f"breakout entry: {side.value} at {price} (regime={regime.value})"
+    return level, (
+        f"momentum entry (volume-confirmed): {side.value} at {price} "
+        f"(regime={regime.value}, volume_vs_avg={volume_vs_avg})"
+    )
 
 
 def build_trend_exit(

@@ -67,6 +67,10 @@ class StrategyTrendConfig(BaseModel):
     # Фиксированный % от цены входа — стоп-лосс и тейк-профит.
     stop_loss_pct: Decimal = Decimal("0.015")  # DEFAULT 1.5%
     take_profit_pct: Decimal = Decimal("0.03")  # DEFAULT 3%
+    # Подтверждение объёмом (momentum): текущий объём / средний объём окна
+    # должен быть не ниже этого порога, иначе вход не открывается — реже
+    # ловим ложные пробои без реального интереса участников. 1.0 = отключить.
+    min_volume_ratio: Decimal = Decimal("1.3")
 
 
 class RiskConfig(BaseModel):

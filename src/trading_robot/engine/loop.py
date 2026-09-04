@@ -127,6 +127,7 @@ def trend_config_from_config(cfg: RootConfig) -> TrendConfig:
         aggressive_offset_bps=cfg.strategy_trend.aggressive_offset_bps,
         stop_loss_pct=cfg.strategy_trend.stop_loss_pct,
         take_profit_pct=cfg.strategy_trend.take_profit_pct,
+        min_volume_ratio=cfg.strategy_trend.min_volume_ratio,
     )
 
 
@@ -616,6 +617,7 @@ class RobotEngine:
 
         entry_level, entry_reason = build_trend_entry(
             instrument=instrument, regime=regime, mid_price=features.mid,
+            volume_vs_avg=features.volume_vs_avg,
             current_inventory_lots=current_inventory, config=self._trend_config, tick_bucket=tick_bucket,
         )
         if entry_level is None:

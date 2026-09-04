@@ -21,9 +21,13 @@ def _trend_config() -> TrendConfig:
     )
 
 
+_CONFIRMED_VOLUME = Decimal("2.0")  # выше min_volume_ratio=1.3 по умолчанию
+
+
 def test_trend_entry_only_in_trend_regimes(instrument):
     level, _ = build_trend_entry(
         instrument=instrument, regime=Regime.RANGE, mid_price=Decimal("100"),
+        volume_vs_avg=_CONFIRMED_VOLUME,
         current_inventory_lots=0, config=_trend_config(), tick_bucket="2026-09-04",
     )
     assert level is None
@@ -32,17 +36,19 @@ def test_trend_entry_only_in_trend_regimes(instrument):
 def test_trend_entry_uptrend_buys_above_mid(instrument):
     level, reason = build_trend_entry(
         instrument=instrument, regime=Regime.UPTREND, mid_price=Decimal("100"),
+        volume_vs_avg=_CONFIRMED_VOLUME,
         current_inventory_lots=0, config=_trend_config(), tick_bucket="2026-09-04",
     )
     assert level is not None
     assert level.side == Side.BUY
     assert level.price > Decimal("100")  # агрессивная лимитка пересекает спред вверх
-    assert "breakout entry" in reason
+    assert "momentum entry" in reason
 
 
 def test_trend_entry_downtrend_sells_below_mid(instrument):
     level, _ = build_trend_entry(
         instrument=instrument, regime=Regime.DOWNTREND, mid_price=Decimal("100"),
+        volume_vs_avg=_CONFIRMED_VOLUME,
         current_inventory_lots=0, config=_trend_config(), tick_bucket="2026-09-04",
     )
     assert level is not None
@@ -53,6 +59,7 @@ def test_trend_entry_downtrend_sells_below_mid(instrument):
 def test_trend_entry_no_averaging(instrument):
     level, reason = build_trend_entry(
         instrument=instrument, regime=Regime.UPTREND, mid_price=Decimal("100"),
+        volume_vs_avg=_CONFIRMED_VOLUME,
         current_inventory_lots=5, config=_trend_config(), tick_bucket="2026-09-04",
     )
     assert level is None
@@ -62,13 +69,35 @@ def test_trend_entry_no_averaging(instrument):
 def test_trend_entry_idempotent_client_order_id(instrument):
     level1, _ = build_trend_entry(
         instrument=instrument, regime=Regime.UPTREND, mid_price=Decimal("100"),
+        volume_vs_avg=_CONFIRMED_VOLUME,
         current_inventory_lots=0, config=_trend_config(), tick_bucket="2026-09-04",
     )
     level2, _ = build_trend_entry(
         instrument=instrument, regime=Regime.UPTREND, mid_price=Decimal("101"),
+        volume_vs_avg=_CONFIRMED_VOLUME,
         current_inventory_lots=0, config=_trend_config(), tick_bucket="2026-09-04",
     )
     assert level1.client_order_id == level2.client_order_id  # тот же тикер+тренд+день
+
+
+def test_trend_entry_rejected_without_volume_confirmation(instrument):
+    level, reason = build_trend_entry(
+        instrument=instrument, regime=Regime.UPTREND, mid_price=Decimal("100"),
+        volume_vs_avg=Decimal("1.1"),  # ниже min_volume_ratio=1.3 по умолчанию
+        current_inventory_lots=0, config=_trend_config(), tick_bucket="2026-09-04",
+    )
+    assert level is None
+    assert "volume not confirmed" in reason
+
+
+def test_trend_entry_allowed_exactly_at_volume_threshold(instrument):
+    config = _trend_config()
+    level, reason = build_trend_entry(
+        instrument=instrument, regime=Regime.UPTREND, mid_price=Decimal("100"),
+        volume_vs_avg=config.min_volume_ratio,  # ровно на границе — должно пропускать
+        current_inventory_lots=0, config=config, tick_bucket="2026-09-04",
+    )
+    assert level is not None
 
 
 def test_trend_exit_long_stop_loss(instrument):

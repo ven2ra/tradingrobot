@@ -319,6 +319,8 @@ const REASON_RULES = [
   [/^trend entry skipped: already have a position \((-?\d+) lots\), no averaging$/, m => `Вход по тренду пропущен: по инструменту уже есть позиция (${m[1]} лот.) — усреднение запрещено`],
   [/^trend entry skipped: regime=(\w+) is not uptrend\/downtrend$/, m => `Вход по тренду недоступен: режим рынка «${REGIME_RU[m[1]] || m[1]}»`],
   [/^breakout entry: (buy|sell) at ([\d.]+) \(regime=(\w+)\)$/, m => `Пробойный вход по тренду: ${m[1] === 'buy' ? 'покупка' : 'продажа'} по ${m[2]} (режим: ${REGIME_RU[m[3]] || m[3]})`],
+  [/^momentum entry \(volume-confirmed\): (buy|sell) at ([\d.]+) \(regime=(\w+), volume_vs_avg=([\d.]+)\)$/, m => `Momentum-вход по тренду (объём подтверждён): ${m[1] === 'buy' ? 'покупка' : 'продажа'} по ${m[2]} (режим: ${REGIME_RU[m[3]] || m[3]}, объём ×${parseFloat(m[4]).toFixed(2)} от среднего)`],
+  [/^trend entry skipped: volume not confirmed \(volume_vs_avg=([\d.]+) < min_volume_ratio=([\d.]+)\)$/, m => `Вход по тренду пропущен: объём не подтверждён (сейчас ×${parseFloat(m[1]).toFixed(2)} от среднего, нужно не меньше ×${parseFloat(m[2]).toFixed(2)}) — вероятен ложный пробой`],
   [/^trend exit skipped: no position$/, () => 'Управление трендовой позицией: позиции уже нет'],
   [/^trend exit skipped: invalid entry price$/, () => 'Управление трендовой позицией: некорректная цена входа'],
   [/^long stop-loss hit: mark=([\d.]+) <= stop=([\d.]+)$/, m => `Стоп-лосс по лонгу: цена ${m[1]} ≤ уровня стопа ${m[2]} — закрываем позицию`],
