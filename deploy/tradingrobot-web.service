@@ -16,7 +16,10 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadOnlyPaths=/opt/tradingrobot/data
+# Панель почти полностью read-only, НО пишет data/selected_instruments.json
+# (см. webui/server.py POST /api/instruments) — поэтому нужен именно
+# ReadWritePaths, не ReadOnlyPaths, иначе запись падает с EROFS.
+ReadWritePaths=/opt/tradingrobot/data
 ProtectHome=true
 
 [Install]

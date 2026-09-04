@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import logging
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +36,8 @@ from pathlib import Path
 from trading_robot.config.loader import RootConfig, load_config
 from trading_robot.data.liquid_tickers import LIQUID_TQBR_SHARES
 from trading_robot.store.instrument_selection import InstrumentSelectionError, InstrumentSelectionStore
+
+logger = logging.getLogger("trading_robot.webui")
 
 INDEX_HTML = """<!doctype html>
 <html lang="ru">
@@ -617,6 +620,13 @@ def make_handler(cfg: RootConfig, auth_header: str | None):
                     self._send_json(200, {"ok": True, "selected": [s.ticker for s in saved or []]})
                 except (InstrumentSelectionError, ValueError, json.JSONDecodeError) as exc:
                     self._send_json(400, {"ok": False, "error": str(exc)})
+                except OSError as exc:
+                    # Например EROFS/EACCES на data/ (см. systemd ReadWritePaths в
+                    # deploy/tradingrobot-web.service) — без этого перехвата
+                    # исключение уходит в BaseServer.handle_error и соединение
+                    # рвётся без ответа, а браузер видит невнятную сетевую ошибку.
+                    logger.exception("не удалось сохранить selected_instruments.json")
+                    self._send_json(500, {"ok": False, "error": f"не удалось сохранить на диск: {exc}"})
                 return
 
             self.send_response(404)
@@ -641,6 +651,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
+    logging.basicConfig(level=logging.INFO)
     cfg = load_config(args.config)
 
     user = os.environ.get("WEBUI_USER")
