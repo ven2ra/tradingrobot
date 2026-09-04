@@ -294,6 +294,34 @@ class TInvestAdapter:
         self._figi_to_instrument[obj.figi] = instrument
         return obj
 
+    def _resolve_by_figi(self, figi: str) -> Instrument:
+        """Обратное разрешение figi -> наш Instrument для позиций/заявок,
+        которые брокер вернул по инструменту, ещё не встречавшемуся в этом
+        запуске процесса (свежий рестарт сервиса, инструмент вне текущего
+        config.instruments/выбора на панели и т.п.). Без этого get_account()
+        молча ТЕРЯЛ такие позиции (see: InstrumentsService.get_instrument_by
+        отдаёт generic Instrument с теми же lot/min_price_increment/currency,
+        что и Share/Bond/Future — совместим с тем, что использует
+        get_instrument_spec).
+        """
+        cached = self._figi_to_instrument.get(figi)
+        if cached is not None:
+            return cached
+        resp = self._call(
+            self._services.instruments.get_instrument_by,
+            id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi,
+        )
+        raw = resp.instrument
+        instrument_class = {
+            "share": InstrumentClass.SHARE,
+            "bond": InstrumentClass.BOND,
+            "future": InstrumentClass.FUTURE,
+        }.get(raw.instrument_type, InstrumentClass.SHARE)
+        instrument = Instrument(ticker=raw.ticker, board=raw.class_code, instrument_class=instrument_class)
+        self._instrument_cache[instrument.key] = raw
+        self._figi_to_instrument[figi] = instrument
+        return instrument
+
     # -- market data ----------------------------------------------------------
     def get_quote(self, instrument: Instrument) -> Quote:
         self._require_connected()
@@ -353,9 +381,12 @@ class TInvestAdapter:
         price_step = quotation_to_decimal(obj.min_price_increment)
 
         initial_margin_per_lot = None
-        if instrument.instrument_class == InstrumentClass.FUTURE:
+        if instrument.instrument_class == InstrumentClass.FUTURE and hasattr(obj, "initial_margin_on_buy"):
             # ГО на покупку/продажу может отличаться — берём консервативно
             # большее из двух, чтобы риск-проверка не занижала требование.
+            # hasattr: если obj пришёл из _resolve_by_figi (общий Instrument,
+            # не Future) — полей ГО там нет, initial_margin_per_lot=None
+            # (проверка ГО просто пропускается выше по стеку, см. risk_manager).
             buy_margin = money_to_decimal(obj.initial_margin_on_buy)
             sell_margin = money_to_decimal(obj.initial_margin_on_sell)
             initial_margin_per_lot = max(buy_margin, sell_margin)
@@ -395,11 +426,21 @@ class TInvestAdapter:
         for pos in portfolio.positions:
             instrument = self._figi_to_instrument.get(pos.figi)
             if instrument is None:
-                # Позиция по инструменту, которым этот запуск робота не
-                # управляет (не в config.instruments) — не строим для неё
-                # доменный Instrument (нет board/instrument_class без
-                # дополнительного похода в API), пропускаем.
-                continue
+                # Позиция по инструменту, который ещё не резолвился в ЭТОМ
+                # запуске процесса (свежий рестарт сервиса, инструмент вне
+                # текущего выбора на панели и т.п.) — раньше такая позиция
+                # молча пропадала из AccountState, что занижало/искажало
+                # equity и могло ложно бить по дневному стоп-лоссу.
+                # Резолвим по figi напрямую через API, а не пропускаем.
+                try:
+                    instrument = self._resolve_by_figi(pos.figi)
+                except Exception:
+                    logger.warning(
+                        "не удалось резолвить figi=%s для открытой позиции — "
+                        "она не попадёт в AccountState/equity, проверьте вручную",
+                        pos.figi,
+                    )
+                    continue
             positions.append(
                 Position(
                     instrument=instrument,
@@ -418,9 +459,15 @@ class TInvestAdapter:
             # боевым использованием сверьте реальный ответ get_orders() и, если
             # понадобится, замените на instrument_uid/positional_uid — что бы SDK
             # реально ни возвращал.
-            instrument = self._figi_to_instrument.get(getattr(state, "figi", ""))
+            state_figi = getattr(state, "figi", "")
+            instrument = self._figi_to_instrument.get(state_figi)
+            if instrument is None and state_figi:
+                try:
+                    instrument = self._resolve_by_figi(state_figi)
+                except Exception:
+                    logger.warning("не удалось резолвить figi=%s для открытой заявки, пропускаю", state_figi)
             if instrument is None:
-                continue  # заявка вне управляемых этим запуском инструментов (или figi не распознан)
+                continue  # нет figi в ответе SDK или не удалось резолвить
             orders.append(
                 Order(
                     # SDK не возвращает наш client_order_id в get_orders() (только в

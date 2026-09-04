@@ -47,6 +47,12 @@ def build_snapshot(
 ) -> AccountSnapshot:
     positions: list[PositionSnapshot] = []
     for pos in account.positions:
+        if pos.lots == 0:
+            # Полностью закрытая позиция (0 лотов) — некоторые брокеры (в т.ч.
+            # T-Invest) какое-то время всё ещё отдают такую запись в
+            # портфеле после флэттенинга; показывать её как "позицию" не
+            # имеет смысла, только засоряет панель.
+            continue
         spec = specs.get(pos.instrument.key)
         if spec is None:
             continue
