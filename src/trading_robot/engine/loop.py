@@ -127,6 +127,13 @@ class RobotEngine:
         self._state = state_store.load()
         self._daily_tracker: DailyPnlTracker | None = None
         self._account_snapshot_path = Path(cfg.account_snapshot_path)
+        # Последние успешно полученные котировка/спецификация по каждому
+        # инструменту — fallback для _fetch_marks(), чтобы одиночный сбой
+        # запроса (сеть, временная недоступность у брокера) не занулял
+        # стоимость открытой позиции в equity_of() и не бил ложно по
+        # дневному стоп-лоссу.
+        self._last_mark_prices: dict[str, Decimal] = {}
+        self._last_specs: dict[str, InstrumentSpec] = {}
 
     def _load_instruments(self) -> list[Instrument]:
         """Список инструментов на этот такт: то, что выбрано через веб-панель
@@ -172,10 +179,25 @@ class RobotEngine:
         for instrument in instruments:
             try:
                 quote = self._broker.get_quote(instrument)
-                specs[instrument.key] = self._broker.get_instrument_spec(instrument)
-                mark_prices[instrument.key] = (quote.bid + quote.ask) / Decimal("2")
+                spec = self._broker.get_instrument_spec(instrument)
+                mark = (quote.bid + quote.ask) / Decimal("2")
+                specs[instrument.key] = spec
+                mark_prices[instrument.key] = mark
+                self._last_specs[instrument.key] = spec
+                self._last_mark_prices[instrument.key] = mark
             except Exception:
-                logger.warning("failed to fetch quote/spec for %s", instrument.key)
+                # Одиночный сбой запроса не должен занулять equity позиции —
+                # используем последние известные значения, если они есть.
+                cached_spec = self._last_specs.get(instrument.key)
+                cached_mark = self._last_mark_prices.get(instrument.key)
+                if cached_spec is not None and cached_mark is not None:
+                    specs[instrument.key] = cached_spec
+                    mark_prices[instrument.key] = cached_mark
+                    logger.warning(
+                        "failed to fetch quote/spec for %s, using last known values", instrument.key
+                    )
+                else:
+                    logger.warning("failed to fetch quote/spec for %s, no cached fallback", instrument.key)
         return mark_prices, specs
 
     def _reconcile_day(self, account: AccountState) -> None:
