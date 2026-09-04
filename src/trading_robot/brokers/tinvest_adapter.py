@@ -52,6 +52,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable, TypeVar
@@ -108,6 +109,20 @@ _INTERVAL_MAP: dict[str, tuple[str, timedelta]] = {
     "1h": ("CANDLE_INTERVAL_HOUR", timedelta(hours=1)),
     "1d": ("CANDLE_INTERVAL_DAY", timedelta(days=1)),
 }
+
+# T-Invest требует, чтобы order_id в post_order/post_sandbox_order был ЛИБО
+# пустым, ЛИБО валидным UUID (наш внутренний client_order_id — читаемая
+# строка вида "GRID-<hex>", не UUID, и API реально отклоняет такие значения
+# ошибкой "order_id should be empty or uuid" — воспроизведено вживую).
+# uuid5 от фиксированного namespace детерминирован: один и тот же
+# client_order_id всегда даёт один и тот же UUID, так что идемпотентность
+# (повторный такт не дублирует заявку) сохраняется, просто в другом формате.
+_ORDER_ID_NAMESPACE = uuid.UUID("d9b1f9a0-6b1a-4f7e-9c1a-9e2f6a2f7c31")
+
+
+def _order_id_for(client_order_id: str) -> str:
+    return str(uuid.uuid5(_ORDER_ID_NAMESPACE, client_order_id))
+
 
 _T = TypeVar("_T")
 # Таймаут на КАЖДЫЙ отдельный вызов gRPC-метода SDK. У SDK нет дефолтного
@@ -453,7 +468,7 @@ class TInvestAdapter:
             direction=direction,
             account_id=self._account_id,
             order_type=OrderType.ORDER_TYPE_LIMIT,
-            order_id=request.client_order_id,
+            order_id=_order_id_for(request.client_order_id),
             time_in_force=_TIF_MAP.get(request.time_in_force, TimeInForceType.TIME_IN_FORCE_DAY),
         )
         return OrderAck(
