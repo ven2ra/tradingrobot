@@ -425,12 +425,30 @@ class TInvestAdapter:
             positions_resp = self._call(self._services.operations.get_positions, account_id=self._account_id)
             orders_resp = self._call(self._services.orders.get_orders, account_id=self._account_id)
 
+        # PositionsResponse.money — СВОБОДНЫЕ деньги (не зарезервированные под
+        # открытые заявки); PositionsResponse.blocked — деньги, заблокированные
+        # под уже выставленные (но ещё не исполненные) лимитные заявки. Это НЕ
+        # убыток — деньги никуда не делись, просто временно недоступны для
+        # НОВЫХ заявок. Если считать equity только по money (как было раньше),
+        # каждый новый такт с несколькими открытыми заявками по нескольким
+        # инструментам искусственно занижает equity на сумму резерва — именно
+        # так дневной стоп-лосс срабатывал ложно сразу после массового
+        # выставления сетки по 8 тикерам, при нулевом количестве реальных
+        # позиций. AccountState.cash здесь — ПОЛНАЯ сумма (money + blocked):
+        # для equity/дневного P&L это правильно; для риск-сайзинга новых
+        # заявок это чуть оптимистичнее реальной "свободной" суммы, но это
+        # приемлемый компромисс против ложных остановок робота.
         currency = None
-        cash = Decimal("0")
+        free_cash = Decimal("0")
+        blocked_cash = Decimal("0")
         for money in positions_resp.money:
             if currency is None or money.currency.lower() in ("rub", "rur"):
-                cash = money_to_decimal(money)
+                free_cash = money_to_decimal(money)
                 currency = money.currency
+        for money in positions_resp.blocked:
+            if money.currency.lower() == (currency or "rub").lower():
+                blocked_cash += money_to_decimal(money)
+        cash = free_cash + blocked_cash
         if currency is None:
             currency = "rub"
 
