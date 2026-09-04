@@ -310,6 +310,15 @@ const TICKER_RU = {
 // лог). Здесь они переводятся только для отображения; оригинал всегда виден
 // при наведении курсора на текст причины.
 const REASON_RULES = [
+  [/^grid level (\d+) (buy|sell) at ([\d.]+) \(([\d.]+)% (above|below) mid ([\d.]+)\)$/, m => {
+    const [, level, side, price, pct, dir, mid] = m;
+    const sideRu = side === 'buy' ? 'покупку' : 'продажу';
+    const dirRu = dir === 'above' ? 'выше' : 'ниже';
+    const rationale = side === 'sell'
+      ? 'ставка на то, что рынок стоит на месте и цена вернётся вниз к среднему — продаём дороже текущей средней'
+      : 'ставка на то, что рынок стоит на месте и цена вернётся вверх к среднему — покупаем дешевле текущей средней';
+    return `Сетка, уровень ${level}: заявка на ${sideRu} по ${price} — это ${pct}% ${dirRu} текущей средней цены (${mid}); ${rationale}`;
+  }],
   [/^grid level (\d+) (buy|sell)$/, m => `Сетка, уровень ${m[1]}: заявка на ${m[2] === 'buy' ? 'покупку' : 'продажу'}`],
   [/^no broker connection: new entries forbidden$/, () => 'Нет связи с брокером — новые сделки запрещены'],
   [/^daily loss limit reached.*$/, () => 'Достигнут дневной лимит убытка — только закрытие позиций и ожидание до следующего дня'],
@@ -340,7 +349,14 @@ const REASON_RULES = [
   [/^trend entry skipped: already have a position \((-?\d+) lots\), no averaging$/, m => `Вход по тренду пропущен: по инструменту уже есть позиция (${m[1]} лот.) — усреднение запрещено`],
   [/^trend entry skipped: regime=(\w+) is not uptrend\/downtrend$/, m => `Вход по тренду недоступен: режим рынка «${REGIME_RU[m[1]] || m[1]}»`],
   [/^breakout entry: (buy|sell) at ([\d.]+) \(regime=(\w+)\)$/, m => `Пробойный вход по тренду: ${m[1] === 'buy' ? 'покупка' : 'продажа'} по ${m[2]} (режим: ${REGIME_RU[m[3]] || m[3]})`],
-  [/^momentum entry \(volume-confirmed\): (buy|sell) at ([\d.]+) \(regime=(\w+), volume_vs_avg=([\d.]+)\)$/, m => `Momentum-вход по тренду (объём подтверждён): ${m[1] === 'buy' ? 'покупка' : 'продажа'} по ${m[2]} (режим: ${REGIME_RU[m[3]] || m[3]}, объём ×${parseFloat(m[4]).toFixed(2)} от среднего)`],
+  [/^momentum entry \(volume-confirmed\): (buy|sell) at ([\d.]+) \(regime=(\w+), volume_vs_avg=([\d.]+)\)$/, m => {
+    const [, side, price, regime, vol] = m;
+    const sideRu = side === 'buy' ? 'покупку' : 'продажу';
+    const rationale = side === 'buy'
+      ? 'цена намеренно выставлена НАД рыночной, чтобы пересечь спред и купить сразу, не дожидаясь очереди в стакане — так и работает пробойный вход по тренду'
+      : 'цена намеренно выставлена ПОД рыночной, чтобы пересечь спред и продать сразу, не дожидаясь очереди в стакане — так и работает пробойный вход по тренду';
+    return `Вход по тренду (momentum): заявка на ${sideRu} по ${price} — режим «${REGIME_RU[regime] || regime}», объём в ×${parseFloat(vol).toFixed(2)} раза выше среднего (подтверждает, что движение не случайное); ${rationale}`;
+  }],
   [/^trend entry skipped: volume not confirmed \(volume_vs_avg=([\d.]+) < min_volume_ratio=([\d.]+)\)$/, m => `Вход по тренду пропущен: объём не подтверждён (сейчас ×${parseFloat(m[1]).toFixed(2)} от среднего, нужно не меньше ×${parseFloat(m[2]).toFixed(2)}) — вероятен ложный пробой`],
   [/^trend exit skipped: no position$/, () => 'Управление трендовой позицией: позиции уже нет'],
   [/^trend exit skipped: invalid entry price$/, () => 'Управление трендовой позицией: некорректная цена входа'],

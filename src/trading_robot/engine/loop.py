@@ -597,9 +597,18 @@ class RobotEngine:
                 self._state.known_client_order_ids.append(level.client_order_id)
                 self._store.save(self._state)
 
+                mid = features.mid
+                distance_pct = (abs(level.price - mid) / mid * Decimal("100")) if mid > 0 else Decimal("0")
+                direction = "above" if level.side == Side.SELL else "below"
                 self._journal.record(
                     ticker=ticker, regime=regime.value, action="enter",
-                    reason=f"grid level {level.level_index} {level.side.value}",
+                    reason=(
+                        # Не просто "уровень N, сторона" — сколько % от текущей средней
+                        # цены и в какую сторону, чтобы был виден расчёт, а не только факт
+                        # (см. панель: колонка "Зачем эта заявка" переводит эту строку).
+                        f"grid level {level.level_index} {level.side.value} at {level.price} "
+                        f"({distance_pct:.2f}% {direction} mid {mid})"
+                    ),
                     account=account, client_order_id=ack.client_order_id,
                     broker_order_id=ack.broker_order_id, price=level.price, lots=lots,
                     status=ack.status.value,
