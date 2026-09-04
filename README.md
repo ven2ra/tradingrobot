@@ -41,7 +41,7 @@ trading_robot/
     interfaces/broker.py    # Protocol BrokerAdapter
     brokers/
       mock_broker.py        # детерминированный paper-брокер
-      tinvest_adapter.py    # каркас под tinkoff.invest, NotImplementedError + TODO
+      tinvest_adapter.py    # реальный адаптер T-Invest (t_tech.invest, см. раздел 4)
     features/features.py
     regime/regime.py
     context/
@@ -80,22 +80,32 @@ trading_robot/
 конфиге (по умолчанию 10 и 0.01 — уточните под реальную бумагу).
 
 `broker.kind: tinvest` включает реализованный `TInvestAdapter` поверх
-официального SDK `tinkoff-investments` (пакет `tinkoff.invest`,
-https://github.com/RussianInvestments/invest-python). Методы (`get_quote`,
-`get_orderbook`, `get_bars`, `get_instrument_spec`, `get_account`,
-`place_limit_order`, `cancel_order`) реализованы через проверенные по
-исходному коду SDK сервисы (`MarketDataService`, `InstrumentsService`,
-`OperationsService`, `OrdersService`, `UsersService`) — установка:
+официального SDK T-Банка. **Важно:** старый пакет `tinkoff-investments`
+(модуль `tinkoff.invest`) снят с PyPI, репозиторий
+github.com/RussianInvestments/invest-python архивирован — Т-Банк
+переехал на свой GitLab и переименовал пакет в `t-tech-investments`
+(модуль `t_tech.invest`), сигнатуры методов при этом не изменились
+(проверено живым импортом). Установка:
 ```bash
-pip install 'trading-robot[tinvest]'
+pip install 't-tech-investments' --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple
+# либо через extras проекта (нужен ещё --extra-index-url):
+pip install -e '.[tinvest]' --extra-index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple
 ```
+Методы (`get_quote`, `get_orderbook`, `get_bars`, `get_instrument_spec`,
+`get_account`, `place_limit_order`, `cancel_order`) реализованы через
+сервисы SDK (`MarketDataService`, `InstrumentsService`,
+`OperationsService`/`SandboxService`, `OrdersService`, `UsersService`),
+сигнатуры сверены `inspect.signature()` на реально установленном пакете.
 Токен и account_id — только из переменных окружения (`broker.token_env`,
-`broker.account_id_env` в конфиге называют имена, не значения).
-`broker.sandbox: true` — это официальная песочница T-Invest (реальный
-контур брокера в изолированном режиме, НЕ путать с нашим internal
-`MockBroker`). Одно не проверено «вживую» в рамках этой разработки — сам
-gRPC-эндпоинт (нужен боевой токен и сетевой доступ к нему); один
-TODO явно помечен в коде (`used_margin` через
+`broker.account_id_env` в конфиге называют имена, не значения; сами
+имена `TINVEST_TOKEN`/`TINVEST_ACCOUNT_ID` — наш выбор, к названию
+пакета отношения не имеют). `broker.sandbox: true` — официальная
+песочница T-Invest (реальный контур брокера в изолированном режиме, НЕ
+путать с нашим internal `MockBroker`); она работает через отдельный
+`SandboxService`, а не `Users/Operations/OrdersService`. Каждый
+сетевой вызов SDK обёрнут таймаутом (10с по умолчанию) — зависший
+gRPC-вызов превращается в понятную ошибку в журнале, а не в вечную
+тишину. Один TODO явно помечен в коде (`used_margin` через
 `UsersService.get_margin_attributes` — поля ответа не проверялись).
 Перед боевым использованием прогоните smoke-test на `sandbox: true` и
 сверьте результат с личным кабинетом.

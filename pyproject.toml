@@ -12,7 +12,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tinvest = ["tinkoff-investments>=0.2,<1"]
+# T-Bank сняли пакет с обычного PyPI и переехали на свой GitLab-реестр —
+# одного extras здесь недостаточно, нужен ещё --extra-index-url:
+#   pip install -e '.[tinvest]' --extra-index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple
+tinvest = ["t-tech-investments"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

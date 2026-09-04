@@ -1,19 +1,35 @@
-"""Адаптер для T-Invest API — официальный SDK `tinkoff-investments`
-(пакет `tinkoff.invest`, https://github.com/RussianInvestments/invest-python).
+"""Адаптер для T-Invest API — официальный SDK T-Банка.
 
-Все имена классов/enum/методов ниже сверены с исходным кодом SDK
-(services.py, schemas.py, clients.py, utils.py) на момент написания —
-это не приближение и не выдумка. Единственное, что здесь не проверено
-«на живую» — реальный gRPC-эндпоинт (для этого нужен боевой токен и
-подключение из окружения, где разрешён исходящий gRPC/HTTP2, чего эта
-сессия дать не может). Перед боевым использованием прогоните ручной
-smoke-test (--config с trading.mode: paper, broker.kind: tinvest,
-broker.sandbox: true) и сверьте результат с личным кабинетом брокера.
+ВАЖНО (изменилось после первой версии этого файла): пакет
+`tinkoff-investments` (модуль `tinkoff.invest`,
+github.com/RussianInvestments/invest-python) СНЯТ с PyPI, а сам
+GitHub-репозиторий переведён в архив ("Public archive") — Т-Банк
+(бывш. Тинькофф) перенёс разработку на собственный GitLab и
+переименовал пакет. Актуально на момент написания:
 
-Контуры:
-  * INVEST_GRPC_API          (invest-public-api.tinkoff.ru) — боевой
+  * пакет:  `t-tech-investments`
+  * модуль: `t_tech.invest` (было `tinkoff.invest`)
+  * установка (свой индекс PyPI, обычный `pip install t-tech-investments`
+    без --index-url не находит пакет):
+        pip install t-tech-investments \
+          --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple
+  * репозиторий: https://opensource.tbank.ru/invest/invest-python
+
+Все имена классов/enum/методов ниже проверены живым импортом
+установленного пакета (`t_tech.invest.services.Services`,
+`inspect.signature` на каждом использованном методе) — сигнатуры
+совпадают 1-в-1 с тем, что было в архивном `tinkoff.invest` (это
+переименованный форк, не переписанный заново). Единственное, что
+здесь не проверено «на живую» — реальный ответ от боевого/sandbox
+gRPC с настоящим счётом (нужен токен и сетевой доступ с конкретного
+сервера). Перед боевым использованием прогоните smoke-test
+(trading.mode: paper, broker.kind: tinvest, broker.sandbox: true) и
+сверьте результат с личным кабинетом.
+
+Контуры (хосты тоже сменились с *.tinkoff.ru на *.tbank.ru):
+  * INVEST_GRPC_API          (invest-public-api.tbank.ru) — боевой
     контур (реальные деньги).
-  * INVEST_GRPC_API_SANDBOX  (sandbox-invest-public-api.tinkoff.ru) —
+  * INVEST_GRPC_API_SANDBOX  (sandbox-invest-public-api.tbank.ru) —
     официальная песочница T-Invest (не путать с нашим internal
     paper-режимом MockBroker: здесь ордера реально уходят на сторону
     брокера, просто в изолированном тестовом контуре). ВАЖНО: песочница
@@ -25,8 +41,11 @@ broker.sandbox: true) и сверьте результат с личным ка�
     используются одинаково независимо от sandbox.
 
 Секреты: токен и account_id читаются ТОЛЬКО из переменных окружения
-(имена задаются в config.yaml: broker.token_env, broker.account_id_env).
-В коде и YAML — только имена переменных, никогда сами значения.
+(имена задаются в config.yaml: broker.token_env, broker.account_id_env;
+имена переменных TINVEST_TOKEN/TINVEST_ACCOUNT_ID — наш собственный
+выбор для конфига, к названию пакета отношения не имеют, менять не
+обязательно). В коде и YAML — только имена переменных, никогда сами
+значения.
 """
 from __future__ import annotations
 
@@ -55,7 +74,7 @@ from trading_robot.domain.types import (
 )
 
 try:
-    from tinkoff.invest import (
+    from t_tech.invest import (
         CandleInterval,
         Client,
         InstrumentIdType,
@@ -64,11 +83,11 @@ try:
         OrderType,
         TimeInForceType,
     )
-    from tinkoff.invest.constants import INVEST_GRPC_API, INVEST_GRPC_API_SANDBOX
-    from tinkoff.invest.utils import decimal_to_quotation, money_to_decimal, quotation_to_decimal
+    from t_tech.invest.constants import INVEST_GRPC_API, INVEST_GRPC_API_SANDBOX
+    from t_tech.invest.utils import decimal_to_quotation, money_to_decimal, quotation_to_decimal
 
     _TINKOFF_IMPORT_ERROR: Exception | None = None
-except ImportError as exc:  # пакет tinkoff-investments не установлен
+except ImportError as exc:  # пакет t-tech-investments не установлен
     _TINKOFF_IMPORT_ERROR = exc
 
 
@@ -148,8 +167,9 @@ class TInvestAdapter:
     def _require_sdk(self) -> None:
         if _TINKOFF_IMPORT_ERROR is not None:
             raise TInvestConfigError(
-                "пакет tinkoff-investments не установлен. Установите: "
-                "pip install 'trading-robot[tinvest]'"
+                "пакет t-tech-investments не установлен. Установите: "
+                "pip install t-tech-investments --index-url "
+                "https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple"
             ) from _TINKOFF_IMPORT_ERROR
 
     # -- connection ---------------------------------------------------------
