@@ -15,7 +15,9 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
-from trading_robot.domain.types import AccountState, InstrumentSpec
+from trading_robot.domain.types import AccountState, InstrumentSpec, OrderStatus
+
+_ACTIVE_ORDER_STATUSES = {OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PARTIALLY_FILLED}
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,12 +32,26 @@ class PositionSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class OrderSnapshot:
+    ticker: str
+    board: str
+    side: str
+    price: str  # str(Decimal)
+    lots: int
+    filled_lots: int
+    status: str
+    client_order_id: str
+    broker_order_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class AccountSnapshot:
     timestamp: str
     cash: str
     currency: str
     equity: str
     positions: list[PositionSnapshot]
+    orders: list[OrderSnapshot]
 
 
 def build_snapshot(
@@ -70,12 +86,35 @@ def build_snapshot(
                 unrealized_pnl=str(unrealized_pnl),
             )
         )
+    orders: list[OrderSnapshot] = []
+    for order in account.orders:
+        # Раздел "Открытые заявки" — это ТЕКУЩЕЕ состояние, а не история (для
+        # неё есть журнал ниже): исполненные/отменённые/отклонённые заявки
+        # сюда не попадают, даже если конкретный брокер продолжает отдавать
+        # их в get_orders() (MockBroker хранит все заявки вечно).
+        if order.status not in _ACTIVE_ORDER_STATUSES:
+            continue
+        orders.append(
+            OrderSnapshot(
+                ticker=order.instrument.ticker,
+                board=order.instrument.board,
+                side=order.side.value,
+                price=str(order.price),
+                lots=order.lots,
+                filled_lots=order.filled_lots,
+                status=order.status.value,
+                client_order_id=order.client_order_id,
+                broker_order_id=order.broker_order_id,
+            )
+        )
+
     return AccountSnapshot(
         timestamp=now.isoformat(),
         cash=str(account.cash),
         currency=account.currency,
         equity=str(equity),
         positions=positions,
+        orders=orders,
     )
 
 

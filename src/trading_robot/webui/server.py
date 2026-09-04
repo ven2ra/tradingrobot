@@ -177,6 +177,20 @@ INDEX_HTML = """<!doctype html>
     </div>
   </div>
 
+  <div class="panel" id="orders-panel">
+    <h2>Открытые заявки <span class="hint" title="ТЕКУЩЕЕ состояние — заявки, которые прямо сейчас висят на бирже неисполненными (статус Новая/Принята/Частично исполнена). Это не история: как только заявка исполнится или будет снята, она пропадёт из этого списка (её судьбу смотрите в журнале ниже, действие «Статус заявки изменился»).">?</span></h2>
+    <div class="wrap" style="max-height:none">
+      <table>
+        <thead><tr>
+          <th>Тикер</th><th>Сторона</th><th>Цена</th><th>Лоты</th>
+          <th>Исполнено<span class="hint" title="Сколько лотов из заявки уже исполнено частично (0, если исполнения ещё не было).">?</span></th>
+          <th>Статус</th><th>ID заявки</th>
+        </tr></thead>
+        <tbody id="orders-rows"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="panel" id="instruments-panel">
     <h2>Какие акции отслеживать
       <span class="hint" title="Изменения применяются на следующем такте робота (обычно в течение нескольких секунд) — перезапуск не нужен. Список ограничен 30 тикерами за раз: каждый тикер — минимум пара сетевых запросов к брокеру за такт.">?</span>
@@ -255,6 +269,11 @@ const STATUS_RU = {
   cancelled: 'Отменена',
   rejected: 'Отклонена',
   '': '—',
+};
+
+const SIDE_RU = {
+  buy: 'Покупка',
+  sell: 'Продажа',
 };
 
 const TICKER_RU = {
@@ -366,6 +385,22 @@ async function refresh() {
     </tr>`;
   }).join('');
   document.getElementById('positions-rows').innerHTML = posRows || '<tr><td colspan="6">Открытых позиций нет</td></tr>';
+
+  const orders = acc.orders || [];
+  const orderRows = orders.map(o => {
+    const tickerTitle = TICKER_RU[o.ticker] ? ` title="${TICKER_RU[o.ticker]}"` : '';
+    return `
+    <tr>
+      <td${tickerTitle}>${o.ticker}</td>
+      <td>${SIDE_RU[o.side] || o.side}</td>
+      <td>${o.price}</td>
+      <td>${o.lots}</td>
+      <td>${o.filled_lots}</td>
+      <td class="status-${o.status || ''}">${STATUS_RU[o.status ?? ''] ?? o.status ?? '—'}</td>
+      <td class="muted">${o.client_order_id ?? '—'}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('orders-rows').innerHTML = orderRows || '<tr><td colspan="7">Открытых заявок нет</td></tr>';
 
   const rows = (data.recent || []).slice().reverse().map(e => {
     const regimeCls = (e.regime && e.regime !== 'n/a') ? e.regime : 'na';
