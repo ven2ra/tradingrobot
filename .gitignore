@@ -4,3 +4,8 @@ __pycache__/
 *.egg-info/
 /data/
 .pytest_cache/
+
+# config/config.yaml — реальный конфиг сервера/локального запуска, правится
+# вручную и НЕ должен затираться `git reset --hard` при каждом деплое.
+# Шаблон с дефолтами — config/config.example.yaml (он и только он в git).
+/config/config.yaml

@@ -48,6 +48,15 @@ sudo -u "$SERVICE_USER" "$APP_DIR/.venv/bin/pip" install -e "$APP_DIR"
 echo "== 5/7: каталог данных (журнал, состояние) =="
 sudo -u "$SERVICE_USER" mkdir -p "$APP_DIR/data"
 
+# config/config.yaml — НЕ в git (см. .gitignore), git reset --hard выше его
+# не тронул. При первом деплое копируем из шаблона; если уже существует —
+# оставляем как есть (там могут быть ваши правки: broker.kind: tinvest,
+# часы сессии, список инструментов и т.п.).
+if [ ! -f "$APP_DIR/config/config.yaml" ]; then
+  sudo -u "$SERVICE_USER" cp "$APP_DIR/config/config.example.yaml" "$APP_DIR/config/config.yaml"
+  echo "config/config.yaml создан из шаблона (config.example.yaml)"
+fi
+
 echo "== 6/7: учётные данные веб-монитора =="
 # Веб-монитор слушает 0.0.0.0:$WEB_PORT (доступен по IP сервера) и требует
 # Basic Auth — без WEBUI_USER/WEBUI_PASSWORD сервис откажется стартовать

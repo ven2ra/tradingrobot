@@ -35,7 +35,8 @@ Strategy → расчёт объёма → Execution.**
 
 ```
 trading_robot/
-  config/config.yaml
+  config/config.example.yaml   # шаблон с дефолтами, в git
+  config/config.yaml           # реальный конфиг — НЕ в git, см. раздел 3
   src/trading_robot/
     domain/types.py         # Decimal-типы: Quote, OrderBook, Bar, InstrumentSpec, AccountState, ...
     interfaces/broker.py    # Protocol BrokerAdapter
@@ -65,7 +66,15 @@ trading_robot/
 
 ## 3. Конфигурация
 
-См. `config/config.yaml`. Ключи, не заданные явно в постановке задачи,
+Шаблон — `config/config.example.yaml` (в git, с дефолтами). Реальный
+рабочий конфиг — `config/config.yaml`: он **не в git**
+(`.gitignore: /config/config.yaml`) специально, чтобы `git reset --hard`
+при обновлении (`deploy.sh`) не затирал ваши правки — брокера, часы
+сессии, список инструментов и т.п. При первом деплое `deploy.sh`
+копирует `config.example.yaml` → `config.yaml`; при повторных —
+оставляет `config.yaml` как есть. Правите только `config.yaml`, в
+`config.example.yaml` — только если меняете дефолты для будущих
+разворачиваний. Ключи, не заданные явно в постановке задачи,
 помечены `# DEFAULT` — используются значения из ТЗ (например
 `max_daily_loss_pct: 1%`, `cash_reserve: 10000`, `max_instruments: 3`,
 `entry_start: 10:05 MSK`). Секреты — только имена переменных окружения
