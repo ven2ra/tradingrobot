@@ -232,7 +232,23 @@ class RobotEngine:
         )
 
         for instrument in self._instruments:
-            self._process_instrument(instrument, account, mark_prices, specs, risk_decision, now)
+            try:
+                self._process_instrument(instrument, account, mark_prices, specs, risk_decision, now)
+            except Exception:
+                # Сбой по ОДНОМУ инструменту (например брокер отклонил заявку с
+                # ошибкой, не входящей в штатные пути ниже) не должен обрывать
+                # весь такт — иначе все инструменты ПОСЛЕ проблемного в списке
+                # молча перестают обрабатываться на каждом такте без единой
+                # записи в журнал, что выглядит как "робот игнорирует бумаги".
+                logger.exception("unhandled error processing instrument %s, continuing with the rest", instrument.ticker)
+                try:
+                    self._journal.record(
+                        ticker=instrument.ticker, regime="n/a", action="skip",
+                        reason="internal error while processing this instrument (see server log)",
+                        account=account,
+                    )
+                except Exception:
+                    logger.exception("failed to even journal the error above for %s", instrument.ticker)
 
     def _process_instrument(self, instrument, account, mark_prices, specs, risk_decision, now: datetime) -> None:
         ticker = instrument.ticker
@@ -357,7 +373,21 @@ class RobotEngine:
             if request is None:
                 continue
 
-            ack = self._broker.place_limit_order(request)
+            try:
+                ack = self._broker.place_limit_order(request)
+            except Exception as exc:
+                # Брокер реально отклоняет/не может исполнить отдельные заявки
+                # (неверная цена/лот для конкретной бумаги, недостаточно ГО,
+                # временный сбой сети и т.п.) — это не должно ронять
+                # обработку остальных уровней/инструментов, только эту заявку.
+                # client_order_id НЕ добавляем в known_client_order_ids —
+                # заявка реально не ушла, попробуем снова на следующем такте.
+                self._journal.record(
+                    ticker=ticker, regime=regime.value, action="skip",
+                    reason=f"place_limit_order failed: {exc}", account=account,
+                    client_order_id=level.client_order_id, price=level.price, lots=lots,
+                )
+                continue
             self._state.known_client_order_ids.append(level.client_order_id)
             self._store.save(self._state)
 
