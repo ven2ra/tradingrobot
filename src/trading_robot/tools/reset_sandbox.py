@@ -16,6 +16,13 @@
 закрываемым счётом параллельно):
   python -m trading_robot.tools.reset_sandbox --config config/config.yaml
   python -m trading_robot.tools.reset_sandbox --config config/config.yaml --initial-cash 500000
+
+Флаг --clear-local-state дополнительно удаляет локальные файлы робота
+(journal.jsonl/journal.log/state.json/account.json — пути берутся из
+самого config.yaml, а не захардкожены) сразу здесь же, одной командой,
+вместо отдельного ручного rm после сброса. Список отслеживаемых бумаг
+(selected_instruments.json) НЕ трогается — это выбор пользователя на
+панели, к состоянию торгового дня отношения не имеет.
 """
 from __future__ import annotations
 
@@ -23,6 +30,7 @@ import argparse
 import os
 import sys
 from decimal import Decimal
+from pathlib import Path
 
 from trading_robot.config.loader import load_config
 
@@ -51,6 +59,12 @@ def main() -> None:
     parser.add_argument(
         "--yes", action="store_true",
         help="Не спрашивать подтверждение (для использования в скриптах)",
+    )
+    parser.add_argument(
+        "--clear-local-state", action="store_true",
+        help="Дополнительно удалить journal.jsonl/journal.log/state.json/account.json "
+             "(пути из config.yaml) — очищает историю и сбрасывает флаг дневного стоп-лосса. "
+             "Робота перед этим нужно остановить самостоятельно (systemctl stop tradingrobot).",
     )
     args = parser.parse_args()
 
@@ -96,12 +110,33 @@ def main() -> None:
         )
         print(f"Открыт новый счёт {new_account.account_id}, зачислено {initial_cash} RUB.")
 
-    print(
-        "\nГотово. Не забудьте очистить локальное состояние робота перед запуском:\n"
-        "  systemctl stop tradingrobot\n"
-        "  rm -f data/journal.jsonl data/journal.log data/state.json data/account.json\n"
-        "  systemctl start tradingrobot"
-    )
+    if args.clear_local_state:
+        local_paths = [
+            Path(cfg.journal.jsonl_path),
+            Path(cfg.journal.human_log_path),
+            Path(cfg.state_store_path),
+            Path(cfg.account_snapshot_path),
+        ]
+        print()
+        for path in local_paths:
+            if path.exists():
+                path.unlink()
+                print(f"Удалено: {path}")
+            else:
+                print(f"Не найдено (и так пусто): {path}")
+        print(
+            "\nЛокальное состояние очищено — журнал, снапшот счёта и флаг дневного "
+            "стоп-лосса сброшены. Запустите робота:\n"
+            "  systemctl start tradingrobot"
+        )
+    else:
+        print(
+            "\nГотово. Не забудьте очистить локальное состояние робота перед запуском\n"
+            "(или запустите этот скрипт с флагом --clear-local-state):\n"
+            "  systemctl stop tradingrobot\n"
+            "  rm -f data/journal.jsonl data/journal.log data/state.json data/account.json\n"
+            "  systemctl start tradingrobot"
+        )
 
 
 if __name__ == "__main__":
